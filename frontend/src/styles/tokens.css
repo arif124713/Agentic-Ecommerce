@@ -1,0 +1,153 @@
+@import "tailwindcss";
+
+/* BlackCart design tokens — spec §18. Pure black, monochrome, typography-driven.
+   The interface recedes; product photography is the only source of colour. */
+:root {
+  /* Surfaces */
+  --bg: #000000;
+  --surface: #0b0b0b;
+  --surface-raised: #111111;
+  --surface-sunken: #060606;
+
+  /* Text */
+  --text: #ffffff;
+  --text-secondary: #bdbdbd;
+  --text-tertiary: #8a8a8a;
+  --text-disabled: #5a5a5a;
+
+  /* Lines */
+  --border: #202020;
+  --border-strong: #333333;
+  --focus-ring: #ffffff;
+
+  /* Accent (monochrome) */
+  --accent: #ffffff;
+  --accent-fg: #000000;
+
+  /* Semantic — desaturated, used sparingly, never as the sole signal */
+  --success: #4ade80;
+  --warning: #facc15;
+  --danger: #f87171;
+  --info: #93c5fd;
+
+  /* Effects */
+  --overlay: rgba(0, 0, 0, 0.72);
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.6);
+  --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.7);
+  --radius-sm: 4px;
+  --radius: 8px;
+  --radius-lg: 16px;
+  --radius-full: 9999px;
+
+  /* Motion */
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --duration-micro: 150ms;
+  --duration-panel: 250ms;
+  --duration-page: 400ms;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-surface-sunken: var(--surface-sunken);
+
+  --color-text: var(--text);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-tertiary: var(--text-tertiary);
+  --color-text-disabled: var(--text-disabled);
+
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-focus-ring: var(--focus-ring);
+
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-info: var(--info);
+
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius);
+  --radius-lg: var(--radius-lg);
+  --radius-full: var(--radius-full);
+
+  --font-sans: "Inter Variable", "Inter", system-ui, -apple-system, sans-serif;
+
+  --container-content: 1440px;
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-feature-settings: "tnum" 1;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::selection {
+    background-color: var(--text);
+    color: var(--bg);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@utility container-page {
+  max-width: var(--container-content);
+  margin-inline: auto;
+  padding-inline: 16px;
+
+  @media (min-width: 768px) {
+    padding-inline: 24px;
+  }
+
+  @media (min-width: 1024px) {
+    padding-inline: 32px;
+  }
+}
+
+@utility text-display {
+  font-size: clamp(2.25rem, 4vw, 3.5rem);
+  line-height: 1.07;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+@utility text-price {
+  font-size: 1.25rem;
+  line-height: 1.2;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+@utility text-mono-code {
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  font-variant-numeric: tabular-nums;
+}

@@ -1,0 +1,31 @@
+# Secrets
+.env
+.env.local
+*.pem
+
+# Python
+myenv/
+backend/**/__pycache__/
+*.pyc
+backend/.pytest_cache/
+backend/.ruff_cache/
+backend/.mypy_cache/
+backend/.coverage
+backend/htmlcov/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Dataset (large, regeneratable via scripts/ingest_flipkart.py)
+data/raw/
+data/quarantine/
+
+# Editor/OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# Claude Code local session state (personal, machine-specific)
+.claude/

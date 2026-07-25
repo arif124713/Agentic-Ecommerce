@@ -76,12 +76,42 @@ Docker isn't installed on this machine, so for now:
 (the downloaded dataset) is also git-ignored since it's regeneratable and large. Neither should ever
 be committed.
 
+## Continuous Integration
+
+`.github/workflows/ci.yml` runs on every push/PR to `main` (and can be triggered manually via
+`workflow_dispatch`):
+
+- **backend** job — spins up a real MySQL 8 service container, then runs `ruff`, `pytest`
+  (with coverage) against a fresh `blackcart_test` database, and a full `alembic upgrade head →
+  downgrade base → upgrade head → check` cycle against a second, separate empty database
+  (`blackcart_ci`) — this is a genuine from-scratch migration test, which is what actually caught
+  and fixed three latent migration-ordering bugs while this workflow was being built (see done.MD's
+  Phase 7 write-up for the git/CI-phase — the baseline migration only used to create one table out
+  of seven). `mypy` also runs but is informational (`continue-on-error`), not a hard gate — see the
+  comment in the workflow file for why.
+- **frontend** job — `npm ci`, `tsc -b`, `oxlint`, `vitest run`, `vite build`.
+
+### Branch protection (do this in GitHub's UI — not something this repo/CI config can set for you)
+
+Once this repo has a GitHub remote:
+
+1. **Settings → Branches → Add branch protection rule**, pattern `main`.
+2. Enable **"Require a pull request before merging"**.
+3. Enable **"Require status checks to pass before merging"**, then search for and select both
+   `Backend (ruff · mypy · pytest+coverage · alembic)` and `Frontend (tsc · oxlint · vitest · build)`
+   — they only appear in that search list after the workflow has run at least once on the repo, so
+   push once first, then come back and add the rule.
+4. Optionally enable **"Require branches to be up to date before merging"** so a stale PR must
+   rebase/merge `main` before the checks are trusted.
+5. Consider **"Do not allow bypassing the above settings"** to apply the rule to admins too.
+
 ## Known gaps to close next
 
-- Initial JS bundle is ~137 KB gzipped against the spec's 180 KB budget — fine today, but there's no
-  route-level code splitting yet, so it'll blow the budget once auth/cart/checkout pages land.
-- No test suite yet (`pytest` and `vitest`/`playwright` are spec'd but nothing is written).
-- No git repository initialized yet.
+- Initial JS bundle is ~191 KB gzipped (Vite's own build warning flags it as a single chunk over
+  500 KB before gzip) — no route-level code splitting yet.
+- `mypy` runs in CI but isn't a hard gate yet — ~25 pre-existing type errors (mostly ORM-object-vs-
+  Pydantic-schema mismatches mypy can't see through `from_attributes=True`) need fixing first.
+- No Playwright E2E suite, load testing, or dependency/SAST scanning in CI yet.
 
 ## Directory layout
 

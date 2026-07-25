@@ -212,7 +212,7 @@ async def test_pending_review_hidden_from_other_shoppers_but_visible_to_author(c
     assert own_view.json()["meta"]["total"] == 1
 
     # Log out (log in as a second, unrelated customer) to see the product from a stranger's view.
-    other_creds = await register_and_login(client, email=unique_email("other"))
+    await register_and_login(client, email=unique_email("other"))
     stranger_view = await client.get(f"/api/v1/products/{product.slug}/reviews")
     assert stranger_view.json()["meta"]["total"] == 0  # pending review isn't public yet
 

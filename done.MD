@@ -25,11 +25,15 @@ bug** in checkout's stock-locking code (§12); security headers, an in-process r
 dependency audit that fixed 4 vulnerable packages and a too-short JWT signing key (§13); sitemap.xml
 /robots.txt, per-page meta/OG tags, and JSON-LD structured data (§13); an accessibility sweep that
 found and fixed real heading-order and unlabeled-form-control issues across 15+ pages (§13); and a
-Prometheus `/metrics` endpoint (§13). CI/CD, load/security-scanning, and deployment/DR remain
-unstarted — blocked on there being no git repository yet. Product reviews & moderation (spec §8.3,
-§9.7) are now also **end-to-end functional** — verified-purchase-gated review submission, a
-pending → approved/rejected/hidden moderation queue, and live rating-aggregate recompute on the
-PDP, verified live through the browser. See §14 below. Running **natively on Windows** — no
+Prometheus `/metrics` endpoint (§13). Product reviews & moderation (spec §8.3, §9.7) are now also
+**end-to-end functional** — verified-purchase-gated review submission, a pending →
+approved/rejected/hidden moderation queue, and live rating-aggregate recompute on the PDP, verified
+live through the browser. See §14 below. A **git repository now exists** (one commit) with a
+working GitHub Actions CI pipeline (backend: ruff/pytest+coverage/alembic-from-scratch gate;
+frontend: tsc/oxlint/vitest/build) — building it from scratch surfaced and fixed three real,
+previously-undetected migration bugs (the baseline migration only ever created one of seven
+catalogue tables). See §15 below. Load/security-scanning and deployment/DR remain unstarted.
+Running **natively on Windows** — no
 Docker/Redis/Celery/Elasticsearch (see §5/§6 below for why and what that changes).
 
 ---
@@ -56,11 +60,11 @@ Docker/Redis/Celery/Elasticsearch (see §5/§6 below for why and what that chang
 | 19 | Responsive & accessibility | 🟡 | Breakpoints, touch targets, focus rings, reduced-motion in place; an axe-core sweep across 15+ pages found and fixed real heading-order and unlabeled-form-control issues (§13 below) — not a full WCAG audit |
 | 20 | SEO & structured data | 🟡 | sitemap.xml, robots.txt, per-page meta/OG tags, JSON-LD (Product/BreadcrumbList/Organization/WebSite/ItemList) — §13 below. No hreflang, no redirects table, no CI structured-data linting |
 | 21 | Observability | 🟡 | Structured logging (§1) plus a Prometheus `/metrics` endpoint (§13 below) exposing request rate/latency/status out of the box; no OpenTelemetry tracing, no Grafana dashboards/alerts — needs a collector/Grafana this setup doesn't have |
-| 22 | Security | 🟡 | Auth/IDOR/CSRF test suite (§12); security headers, an in-process rate limiter with 429+Retry-After, and a dependency audit (4 packages upgraded, 1 fail-fast fix) — §13 below. No audit logging, no file-upload pipeline (no uploads exist yet), no gitleaks/SBOM (no git repo yet) |
+| 22 | Security | 🟡 | Auth/IDOR/CSRF test suite (§12); security headers, an in-process rate limiter with 429+Retry-After, and a dependency audit (4 packages upgraded, 1 fail-fast fix) — §13 below. No audit logging, no file-upload pipeline (no uploads exist yet), no gitleaks/SBOM/pip-audit/npm-audit wired into CI yet (§15) |
 | 23 | Performance budgets | ⬜ | Not started |
-| 24 | Testing strategy | 🟡 | Real pytest (backend) + vitest (frontend) suites now exist covering the spec's flagged critical scenarios — full details in §12 below; no Playwright E2E, load testing, or contract testing |
-| 25–26 | CI/CD, deployment | ⬜ | Not started — blocked on there being no git repository yet |
-| 27 | Repository structure | 🟡 | Backend/frontend layout matches; no `docker/`, `nginx/`, `infra/`, `.github/` yet |
+| 24 | Testing strategy | 🟡 | Real pytest (backend, 59 cases) + vitest (frontend, 32 cases) suites now exist covering the spec's flagged critical scenarios — full details in §12/§14 below; no Playwright E2E, load testing, or contract testing |
+| 25–26 | CI/CD, deployment | 🟡 | Git repo initialized, GitHub Actions CI running ruff/pytest+coverage/alembic-from-scratch (backend) and tsc/oxlint/vitest/build (frontend) — §15 below. No CD/deployment pipeline, no remote pushed yet, branch protection needs manual GitHub setup (guidance in README) |
+| 27 | Repository structure | 🟡 | Backend/frontend layout matches; `.github/workflows/` now exists (§15); no `docker/`, `nginx/`, `infra/` yet |
 | 28–31 | Feature flags, roadmap, risks, appendices | ⬜ | Reference material, not implementation |
 
 ---
@@ -1536,6 +1540,121 @@ assumed from the code.
 
 ---
 
+## 15. Git repository + CI/CD (spec §25) ✅
+
+Picked over CMS/banners/support-tickets and a storefront polish pass as the next phase — every
+prior phase's "known gaps" list has been citing "no git repository yet" as the reason CI/CD,
+dependency scanning, and eventually deployment couldn't start. This phase closes that.
+
+### Git init and the first commit
+
+`git init` at the repo root, then one commit covering everything built through Phase 7 (reviews).
+Before committing: extended `.gitignore` (it already excluded `.env`/`data/raw/`/`node_modules`/
+`myenv` from earlier sessions) to also cover `backend/.pytest_cache/`, `backend/.ruff_cache/`,
+`backend/.coverage`, and `.claude/` (this tool's local session state — personal/machine-specific,
+not project source); added a `.gitattributes` (`* text=auto eol=lf`) so the Windows dev machine and
+Linux CI runners don't fight over line endings. Verified nothing sensitive would be staged before
+committing: `.env` (real `mysql_password`/`kaggle_api_key`) is excluded, `.env.example` only has
+placeholders, and grepping the tracked docs confirmed `README.md`/`done.MD` only ever *name* the
+secret env vars, never their values. 247 files, one commit.
+
+### CI workflow (`.github/workflows/ci.yml`)
+
+Two jobs, matching spec §25's intent (lint/typecheck/test/build gates) scoped to what this project
+actually has tooling for:
+
+- **backend**: a real `mysql:8.0` service container (not mocked), `ruff check`, `pytest` with
+  coverage against a fresh `blackcart_test` DB (same isolation the local test suite already uses),
+  then a from-scratch `alembic upgrade head → downgrade base → upgrade head → check` cycle against
+  a second empty database — spec §8.4's own CI gate, finally actually run for the first time (see
+  the real bugs below for why "finally" is doing a lot of work in that sentence). `mypy` also runs
+  but as `continue-on-error`, not a hard gate: this is genuinely the first time mypy has ever been
+  pointed at this codebase (spec §5.2 names it; done.MD never once lists it as an enforced check
+  before now), and a first run surfaces ~25 pre-existing errors — almost all the same shape (mypy
+  can't see through Pydantic's `from_attributes=True` duck-typing from an ORM object to a schema
+  class). Recorded as a tracked, honest baseline rather than either silently ignoring mypy entirely
+  or making CI red on day one for debt that predates this phase.
+- **frontend**: `npm ci`, `tsc -b`, `oxlint`, `vitest run`, `vite build`.
+
+Every step in both jobs was actually run locally before being trusted in the YAML — ruff/pytest/tsc/
+oxlint/vitest/build all confirmed green, and the alembic sequence specifically simulated end-to-end
+against throwaway local databases with the exact same env-var names and command sequence the
+workflow file uses (`MYSQL_USER`/`mysql_password`/`MYSQL_HOST`/`MYSQL_PORT` matching `Settings`'
+field aliases in `core/config.py` exactly).
+
+### Real bugs found and fixed — the migration chain had never actually been built from scratch
+
+This is the interesting part of this phase. Simulating the CI alembic gate locally (fresh DB →
+`alembic upgrade head`) failed immediately, and not with a flake — reproducibly, against multiple
+differently-named fresh databases. Root cause, once traced: **the baseline migration
+(`3b87e7cbe117_baseline_catalogue_schema`) only ever created one table, `product_images`** — not
+`brands`/`categories`/`products`/`product_variants`/`product_attributes`/`inventory_movements`,
+despite all of them being declared in `app/models/catalog.py` since early in the project. This had
+been invisible for the entire life of the project because **nothing had ever actually built a
+database via the full migration chain from empty**: the dev DB (`blackcart`) was seeded once via
+`Base.metadata.create_all` before Alembic discipline started, and `tests/conftest.py`'s test
+database deliberately also uses `Base.metadata.create_all` (not Alembic) for speed and isolation —
+both legitimate choices on their own, but between them, `alembic upgrade head` from a truly empty
+database had a zero-percent test-coverage blind spot until this session's CI gate specifically
+targeted it.
+
+Once the baseline was traced, two more migrations turned out to be compensating for the same gap:
+`cb7fb7c4289c_inventory_and_refunds` was re-creating `inventory_movements` (because the baseline
+never had, an earlier autogenerate silently "adopted" it as new), and
+`7e6e6ca89efc_discovery_and_search` was hand-adding the `ft_products` FULLTEXT index via raw
+`ALTER TABLE` (same reason — the baseline never created it even though the model declared it).
+Both would collide (`Table already exists`, `Duplicate key name`) the moment the baseline actually
+created these objects correctly.
+
+**Fix**, done properly rather than by hand-transcribing SQL and hoping it matches the models
+exactly: temporarily pointed `alembic/env.py`'s `target_metadata` at a scoped `MetaData` containing
+only `app.models.catalog`'s seven tables (via SQLAlchemy's `Table.to_metadata()`), then used
+`alembic.autogenerate.produce_migrations`/`render_python_code` directly against a genuinely empty
+database — this sidesteps `alembic revision --autogenerate`'s own "is the DB at head" precondition
+check (which would otherwise refuse to diff an unversioned empty DB against a 6-revision chain) and
+just introspects live schema vs. the given metadata. The generated code became the new content of
+`3b87e7cbe117`, with the exact same recurring FK-index-drop-ordering fix this project has applied
+to every migration since Phase 2 applied proactively to its `downgrade()` too (`ix_products_brand`/
+`ix_categories_parent_sort`/`ix_variants_product_active`/`ix_inventory_movements_variant` all lead
+with a live FK column). The two downstream migrations then had their now-duplicate
+`inventory_movements`/`ft_products` creation removed, each with a comment explaining why. `env.py`'s
+temporary scoping hook was reverted afterward — it was a one-off regeneration tool, not something
+that should ship. Re-verified: `upgrade head → downgrade base → upgrade head → alembic check` all
+clean against a fresh database, `pytest tests/ -q` still 59/59 (unaffected — it never used Alembic
+to build its schema), and the real `blackcart`/`blackcart_test` databases were left untouched
+throughout (all reproduction happened against disposable, uniquely-named throwaway databases).
+
+This was a real, previously-undetected gap in a project that otherwise prides itself on "verified
+live, not assumed" — a genuinely fresh deploy (a new contributor, a new environment, this exact CI
+job) would have failed at the very first `alembic upgrade head`, and nothing before this phase would
+ever have caught it.
+
+### Known gaps / deviations
+
+- **`mypy` is informational, not a hard gate** — see above; tightening it is real follow-up work
+  (fix ~25 pre-existing errors first), not bundled into standing up CI itself.
+- **No dependency/SAST scanning in CI** (`pip-audit`, `npm audit`, bandit, trivy, gitleaks) — spec
+  §22.7/§25 name these; Phase 6 ran `pip-audit`/`npm audit` manually once (see §13) but neither is
+  wired into the workflow yet.
+- **No Playwright E2E job, no load testing** — spec §24.3/§24.5's remaining gaps, unchanged.
+- **Branch protection isn't (can't be) configured from the repo** — it's a GitHub UI/API action
+  requiring an actual GitHub remote and admin access this session doesn't have; step-by-step
+  guidance is in `README.md`'s new CI section for the user to apply once the repo is pushed.
+- **No remote configured yet** — this is a local-only git repo (one commit) plus a CI workflow file
+  that will only actually run once pushed to a GitHub remote with Actions enabled.
+
+### Verified
+
+`ruff check`, `pytest tests/ -q` (59 passed), `tsc -b`, `oxlint`, `npm run test` (32 passed), and
+`npm run build` all run locally exactly as the workflow YAML invokes them. The alembic gate was
+proven against real throwaway MySQL databases on this machine using the same env var names and
+command sequence as the workflow file (not just "the YAML looks right") — this is what actually
+caught the three migration bugs above. `git log`/`git status` confirm a clean single-commit history
+with nothing untracked or stray left behind (temporary throwaway databases and the one-off
+regeneration script were cleaned up; `env.py` reverted to its original form).
+
+---
+
 ## Stack deviations from spec §5 (and why)
 
 | Spec says | Built instead | Why |
@@ -1563,10 +1682,12 @@ start uvicorn fresh rather than trusting the reloader.
 
 ## Known gaps / next steps
 
-- No git repository initialized yet (`.gitignore` exists and protects `.env`/`data/raw/` whenever it
-  is) — this is also why CI/CD (spec §25) can't start: there's nothing to attach a pipeline to yet.
-- Test suite: pytest (48 tests, backend) and vitest (32 tests, frontend) now exist and are green —
-  see §12 above for full details, coverage numbers, and the real oversell bug they caught. No
+- Git repository now exists (§15) with a working GitHub Actions CI pipeline — no remote pushed yet,
+  so Actions haven't actually run in GitHub itself (only locally-simulated, which is how three real
+  migration-chain bugs were caught and fixed — see §15). Branch protection needs manual setup once
+  pushed (guidance in README).
+- Test suite: pytest (59 tests, backend) and vitest (32 tests, frontend) now exist and are green —
+  see §12/§14 above for full details, coverage numbers, and the real bugs they caught. No
   Playwright E2E suite yet.
 - **Two open security findings, not yet fixed, both deliberately** — see §13 above for full
   detail: react-router 7.18.1 (GHSA-qwww-vcr4-c8h2, CSRF bypass) needs a major-version migration

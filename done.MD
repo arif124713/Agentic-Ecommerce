@@ -32,8 +32,10 @@ live through the browser. See §14 below. A **git repository now exists** (one c
 working GitHub Actions CI pipeline (backend: ruff/pytest+coverage/alembic-from-scratch gate;
 frontend: tsc/oxlint/vitest/build) — building it from scratch surfaced and fixed three real,
 previously-undetected migration bugs (the baseline migration only ever created one of seven
-catalogue tables). See §15 below. Load/security-scanning and deployment/DR remain unstarted.
-Running **natively on Windows** — no
+catalogue tables). See §15 below. Phase 1's image pipeline gap and the two previously-open
+dependency CVEs (react-router CSRF-bypass range, starlette's ~10 CVEs) are now closed — see §16/§17
+below; `pip-audit`/`npm audit` both report zero known vulnerabilities. Load-testing and
+deployment/DR remain unstarted. Running **natively on Windows** — no
 Docker/Redis/Celery/Elasticsearch (see §5/§6 below for why and what that changes).
 
 ---
@@ -60,7 +62,7 @@ Docker/Redis/Celery/Elasticsearch (see §5/§6 below for why and what that chang
 | 19 | Responsive & accessibility | 🟡 | Breakpoints, touch targets, focus rings, reduced-motion in place; an axe-core sweep across 15+ pages found and fixed real heading-order and unlabeled-form-control issues (§13 below) — not a full WCAG audit |
 | 20 | SEO & structured data | 🟡 | sitemap.xml, robots.txt, per-page meta/OG tags, JSON-LD (Product/BreadcrumbList/Organization/WebSite/ItemList) — §13 below. No hreflang, no redirects table, no CI structured-data linting |
 | 21 | Observability | 🟡 | Structured logging (§1) plus a Prometheus `/metrics` endpoint (§13 below) exposing request rate/latency/status out of the box; no OpenTelemetry tracing, no Grafana dashboards/alerts — needs a collector/Grafana this setup doesn't have |
-| 22 | Security | 🟡 | Auth/IDOR/CSRF test suite (§12); security headers, an in-process rate limiter with 429+Retry-After, and a dependency audit (4 packages upgraded, 1 fail-fast fix) — §13 below. No audit logging, no file-upload pipeline (no uploads exist yet), no gitleaks/SBOM/pip-audit/npm-audit wired into CI yet (§15) |
+| 22 | Security | 🟡 | Auth/IDOR/CSRF test suite (§12); security headers, an in-process rate limiter with 429+Retry-After, and two dependency audit rounds (§13: 4 packages + 1 fail-fast fix; §17: fastapi/starlette/pillow/pytest CVEs and the react-router CSRF-bypass range both closed, `pip-audit`/`npm audit` now zero) — §13/§17 below. No audit logging, no file-upload pipeline (no uploads exist yet), no gitleaks/SBOM, no pip-audit/npm-audit wired into CI yet (§15) |
 | 23 | Performance budgets | ⬜ | Not started |
 | 24 | Testing strategy | 🟡 | Real pytest (backend, 59 cases) + vitest (frontend, 32 cases) suites now exist covering the spec's flagged critical scenarios — full details in §12/§14 below; no Playwright E2E, load testing, or contract testing |
 | 25–26 | CI/CD, deployment | 🟡 | Git repo initialized, GitHub Actions CI running ruff/pytest+coverage/alembic-from-scratch (backend) and tsc/oxlint/vitest/build (frontend) — §15 below. No CD/deployment pipeline, no remote pushed yet, branch protection needs manual GitHub setup (guidance in README) |
@@ -1655,6 +1657,210 @@ regeneration script were cleaned up; `env.py` reverted to its original form).
 
 ---
 
+## 16. Phase 1 gap closure — image pipeline & full ingestion CLI (spec §7.2, §8.3) ✅
+
+Two gaps this project's own docs had been citing since Phase 1: real image processing/self-hosting
+(the catalogue has been hotlinking the source Flipkart CDN since day one) and a fuller multi-stage
+ingestion CLI closer to spec §7.2's design (previously one monolithic `load()` script). Closed both
+together since the CLI's new `media` stage is what actually drives the image pipeline.
+
+### Schema
+
+No migration — `product_images` already had `url`/`width`/`height`; added `url_webp` and `blurhash`
+columns in an earlier pass this session (both nullable, backfilled by the `media` stage, not a
+new Alembic revision since they were added before the table was ever seeded with real data this
+run). `ProductImageOut` (`schemas/catalog.py`) gained matching `url_webp`/`blurhash` fields.
+
+### Backend
+
+- **`core/storage.py`** — a `StorageBackend` protocol (`save(relative_path, data) -> str`) mirroring
+  the existing `MailBackend`/`PaymentProvider` pluggable-adapter pattern already in this codebase.
+  `LocalStorageBackend` writes under `backend/media/` and returns a fully-qualified URL from a new
+  `BACKEND_BASE_URL` setting; a real S3/MinIO backend later is a config value + one adapter class,
+  not a rewrite. `main.py` mounts `/media` via `StaticFiles`.
+- **`core/image_pipeline.py`** — `process_image()`: downloads via `httpx`, validates it actually
+  decodes (`Image.open(...).verify()`, then a real reopen — a `verify()`'d handle is unusable
+  afterwards), resizes to an 832px display cap, transcodes to both a JPEG fallback and a smaller
+  WebP, and computes a real blurhash from the resized pixels via `blurhash.encode(np.array(...))`.
+  Never raises — a dead or corrupt source URL just means that one image is skipped. AVIF and
+  multiple responsive sizes were deliberately not attempted (see the module docstring and "Known
+  gaps" below).
+- **`scripts/ingest_flipkart.py`** — went from one `load()` function to a proper `argparse` CLI:
+  `--stage {fetch,profile,load,media,verify}`. `fetch` downloads the Kaggle dataset idempotently;
+  `profile` prints data-quality stats over the *raw* JSON before any cleaning (null rates,
+  duplicate-key count, cardinality) — re-run and cross-checked against this project's own
+  previously-documented numbers from §3 (2,068 no-brand, 11,980 empty description, 1,920 duplicate
+  pid, 324 distinct brands, 863 unparseable prices, 778 zero-image records, 1,742 out-of-stock — all
+  matched exactly); `load` is the existing clean→normalise→enrich→load pass, renamed and left
+  otherwise alone (with a docstring explaining why those three stages stay merged: ~30K records fit
+  in memory, so intermediate file formats between them wouldn't earn their keep); `media` runs the
+  image pipeline in `chunk_size=300` batches with **incremental per-chunk commits**, then backfills
+  every product's `thumbnail_url` from its now-self-hosted primary image; `verify` checks row
+  counts, price/zero-image/zero-variant sanity, a count of images the media stage hasn't reached
+  yet, and samples 25 self-hosted URLs to confirm the files actually exist on disk — exits non-zero
+  on any failure. `index` (spec §7.2) doesn't exist — no Elasticsearch in this stack (unchanged from
+  §3/§11).
+
+### Real bugs found and fixed
+
+This phase caught more live bugs than usual — worth listing all of them, including two found only
+after the "first" completion was declared and progress was re-checked.
+
+1. **Non-resumable media stage — the first design gathered every remaining row (~36K) into one
+   `asyncio.gather()` and only wrote to the database once everything finished.** For a run against
+   the full catalogue that meant zero durable progress for potentially hours, and total loss on any
+   crash. Caught by checking the DB mid-run and seeing the processed count hadn't moved. Fixed by
+   rewriting `stage_media` to the chunked while-loop described above — verified by killing an
+   in-progress chunked run and confirming a re-invocation picked up exactly where it left off.
+2. **CDN throttling under high concurrency.** `concurrency=64` gave a 76% failure rate on a 500-image
+   test; `concurrency=20` (no retry) gave 62% failure on 1,000 images. Diagnosed by isolating a
+   plain concurrent-fetch repro against the same URLs, which succeeded 100% once the CDN's apparent
+   per-IP cooldown had passed. Settled on `concurrency=16` plus one retry with a 0.5s backoff per
+   image — a 600-image test then went 600/600.
+3. **`Cross-Origin-Resource-Policy: same-origin` (set globally by `SecurityHeadersMiddleware` since
+   Phase 6, spec §22.2) silently blocked the frontend from rendering its own self-hosted images.**
+   Images 200'd and rendered fine navigated-to directly, but a `<picture><img>` embedded from the
+   Vite dev origin (`localhost:5173`) showed `naturalWidth: 0` despite `complete: true` and a
+   successful network response — no console error, no obvious signal beyond a blank image. Traced via
+   `curl -sI` on the image URL revealing the header. Fixed by scoping it: `cross-origin` for paths
+   under `/media/*`, `same-origin` everywhere else (`middleware/security_headers.py`). This is a
+   browser-enforced restriction distinct from CORS and easy to miss because the network tab shows
+   nothing wrong.
+4. **The venv never actually had `pillow`/`numpy`/`blurhash` installed** — they'd been added to
+   `requirements.txt` but `pip install -r requirements.txt` was never re-run against `myenv` after
+   editing it. The first ~16,700 images had genuinely processed successfully in an earlier part of
+   this session (real DB rows, real files on disk — confirmed independently), but when the run was
+   later restarted after an unrelated tool restart, it crashed immediately with
+   `ModuleNotFoundError: No module named 'blurhash'`. Caught by checking process/DB state directly
+   instead of trusting an earlier "still running" assumption — see bug 5. Fixed with a direct
+   `pip install pillow==11.2.1 blurhash==1.1.5 numpy==2.2.6` into `myenv`.
+5. **A stale process-liveness check produced a false "still running.**" After a background-task
+   tracking restart, `Get-Process python` was used to confirm the media job hadn't died — but it
+   matched two unrelated `python.exe` processes (an entirely different project's `uvicorn` server
+   that happened to also be running) instead of the actual ingestion script, which really had died.
+   The DB row count staying flat across two checks minutes apart, plus the newest file on disk being
+   hours stale, were the actual tells; confirmed conclusively via `Get-CimInstance Win32_Process`'s
+   full command line, not just the process name. A process existing under a given name is not the
+   same as it being *the* process being waited on — worth checking the full command line, not just
+   whether a same-named process exists, when process identity actually matters.
+6. **Infinite retry loop on permanently-dead source URLs.** `stage_media`'s while-loop queried
+   `WHERE blurhash IS NULL ORDER BY id LIMIT chunk_size` and only exited when a chunk came back
+   empty — but a row that fails every attempt (a source image genuinely returning `404`, confirmed
+   via `curl`) never gets `blurhash` set, so the same ~41 rows kept being re-selected and re-failing
+   forever once every other row had succeeded. Caught by watching the run's own progress log:
+   `committed` froze while `attempted`/`failed` kept climbing in lockstep, dozens of "chunks" per
+   second — a shape no genuine network-bound chunk could produce. Fixed by tracking a per-run
+   in-memory `failed_ids` set, excluded from the query on every subsequent iteration; the loop now
+   provably terminates within one run regardless of how many rows are permanently unprocessable.
+   Failed rows are left `blurhash IS NULL` in the database (not tombstoned), so a future re-run still
+   retries them in case the source URL recovers — appropriate here since these are foreign CDN URLs
+   this project doesn't control, not something local to fix.
+
+### Frontend
+
+`types/catalog.ts`'s `ProductImage` gained `url_webp`/`blurhash`. `ProductPage.tsx`'s primary image
+is now a `<picture>` with a `<source type="image/webp">` falling back to the JPEG `<img>`. Verified
+live in Chrome: `document.querySelector('picture img').currentSrc` resolved to the `.webp` URL,
+confirming the browser actually selected the WebP source, not just that markup was present.
+`blurhash` is returned by the API but has no consuming frontend code yet (see "Known gaps").
+
+### Known gaps / deviations
+
+- **No AVIF, no multiple responsive sizes** — deliberate; see the `image_pipeline.py` docstring.
+  Nothing downstream would consume either today.
+- **`blurhash` is computed and stored but not rendered anywhere** — no `<canvas>`/CSS decode-and-show
+  of the placeholder on the frontend yet; the data is there for a future loading-state pass.
+- **`products.thumbnail_url` has no `_webp` companion column** — card grids (PLP/rails) keep serving
+  the self-hosted JPEG only; only the PDP gallery (which reads `product_images` directly) gets WebP.
+- **No automated tests for `image_pipeline.py`/`storage.py`** — verified live (curl, DB queries,
+  Chrome rendering, the `verify` stage's own integrity checks) but not covered by `pytest`; a real
+  gap for a project that otherwise has a 59-test backend suite.
+- **41 of 37,899 source images are permanently dead** (`404` from `rukminim1.flixcart.com`, confirmed
+  via `curl`) — expected per this project's own documented caveat about the 2021 crawl; those
+  `product_images` rows keep their original hotlinked `url` and never get a `url_webp`/`blurhash`.
+
+### Verified
+
+Final `media` stage run: **37,858 of 37,899 images succeeded (99.9%), 41 permanently failed** (dead
+source URLs, not a pipeline defect — spot-checked with `curl`), `thumbnail_url` backfilled on 8,094
+products. `stage_verify` output: `products=8103 variants=48618 images=37899`, zero products with
+`price > mrp`, zero with no images, zero with no variants, 41 images not yet processed (the dead
+ones, expected), 25/25 sampled self-hosted files present on disk — `VERIFY OK`. `pytest tests/ -q`
+still 59/59 passed (unaffected — no tests touch this code path, see "Known gaps"). Live-verified in
+Chrome on the product-detail page: image renders, `currentSrc` resolves to the WebP variant, and a
+direct `curl -sI` on a `/media/...` URL confirmed `cross-origin-resource-policy: cross-origin`.
+
+---
+
+## 17. Closing the two known CVEs (spec §22, §24) ✅
+
+The two dependency vulnerabilities §13/§16 had left open on purpose (both flagged as needing a
+major-version migration) are now fixed. Chosen as the starting point for post-Phase-6 hardening
+work since these were live, unfixed vulnerabilities in a running app, not just a hygiene gap.
+
+### Backend: fastapi 0.115.6/starlette 0.41.3 → fastapi 0.140.0/starlette 1.3.1
+
+`pip-audit` against `requirements.txt` found 37 known vulnerabilities across three packages, not
+just starlette: `starlette` (~10 CVEs, fix requires 1.3.1), `pillow` (~20 CVEs, fix requires
+12.3.0), and `pytest` (1 CVE, fix requires 9.0.3). All three upgraded together.
+
+**Real bug hit and fixed**: upgrading fastapi/starlette alone broke all 59 backend tests —
+`prometheus_fastapi_instrumentator` 6.1.0's routing code (`routing.py`) reads `route.path` off
+every matched route, but Starlette 1.x's mount-handling introduced a `_IncludedRouter` wrapper type
+that doesn't have a `.path` attribute, so every single request (including the test client's own
+requests) threw `AttributeError` inside the instrumentation middleware. Not a bug in this project's
+own code — a third-party library whose internals assumed an older Starlette shape. Fixed by
+upgrading `prometheus-fastapi-instrumentator` to 8.1.0 (the version that declares
+`starlette<2.0.0,>=1.0.0` support); all 59 tests passed clean afterward with zero code changes of
+this project's own beyond that.
+
+`pytest-asyncio` 0.24.0 also had to move to 1.4.0 since it pins `pytest<9`, and would otherwise
+have blocked the pytest 9 upgrade. `pytest-cov` 7.1.0 needed no change (already the latest, already
+compatible).
+
+Cleaned up two now-visible deprecation warnings while in the area (not CVEs, but breakage-in-waiting
+now that the fix surfaced them): `app.on_event("startup")` replaced with a proper
+`@asynccontextmanager` `lifespan` handler in `main.py` (FastAPI's own docs mark `on_event` for
+removal); `status.HTTP_422_UNPROCESSABLE_ENTITY` replaced with the new
+`HTTP_422_UNPROCESSABLE_CONTENT` name in `core/errors.py` (both constants currently resolve to 422,
+but the old name is deprecated and Starlette warns on every use).
+
+Verified: `pytest -q` 59/59 green, `ruff check .` clean, `pip-audit` (both against the live
+environment and against `requirements.txt` directly) reports **zero known vulnerabilities** — down
+from 37. Also booted the app for real (`uvicorn app.main:app`) and hit `/healthz`, `/readyz`, and
+`/metrics` live to confirm the lifespan-handler swap and the instrumentator upgrade didn't just pass
+tests but actually serve traffic correctly.
+
+### Frontend: react-router 7.18.1 → 8.3.0
+
+Before upgrading, checked whether GHSA-qwww-vcr4-c8h2 (an RSC-Mode CSRF bypass) was even reachable
+in this app: `router.tsx`/`App.tsx` use plain `createBrowserRouter` + `RouterProvider` — a
+client-only SPA with no React Server Components, no framework-mode config file, no server
+actions/loaders wired through React Router at all (mutations go through React Query, this project's
+own established state-ownership rule per spec §5.1). The advisory's actual vulnerable code path was
+never in use here. Upgraded anyway since `npm audit`'s vulnerable range was `>=7.12.0 <8.3.0` — no
+patch existed on the 7.x line, only 8.3.0 itself is clean.
+
+`tsc -b`, `oxlint`, and `vitest run` (32 tests) all passed with zero code changes needed — the
+version bump was a clean drop-in for this app's usage pattern. Given a major version bump to core
+routing internals deserves more than green automated tests, also verified live in Chrome (dev
+server pointed at a scratch backend port to avoid colliding with an unrelated project already
+holding :8000 on this machine, `vite.config.ts` reverted after): home → category page with
+sub-category chips and brand facets → PDP with variant selection → add-to-cart drawer → browser
+back button (correctly restored the category page, cart badge persisted) → login → protected
+`/account` route → nested `/admin` layout → `/checkout` with live cart carry-over and computed
+totals. Zero console errors throughout. `npm audit` now reports **zero vulnerabilities** (was 1
+high).
+
+### Verified
+
+`pip-audit`: 37 → 0. `npm audit`: 1 high → 0. Backend: 59/59 pytest, ruff clean, live boot +
+`/healthz`/`/readyz`/`/metrics` all 200. Frontend: 32/32 vitest, `tsc -b` clean, `oxlint` clean,
+production `vite build` succeeds, full browser click-through of guest/auth/cart/checkout/admin
+routes with no console errors.
+
+---
+
 ## Stack deviations from spec §5 (and why)
 
 | Spec says | Built instead | Why |
@@ -1665,8 +1871,8 @@ regeneration script were cleaned up; `env.py` reverted to its original form).
 | Celery + beat | Not present | No background jobs exist yet (no orders/emails/invoices) |
 | Elasticsearch + MySQL FULLTEXT fallback | Token-AND/OR `LIKE` relevance search on `title`/`search_keywords` | No Elasticsearch; the spec's own MySQL FULLTEXT ngram fallback was built and empirically found unusable (see §11's "real bug" writeup) and replaced with precise LIKE-based matching — the `ft_products` FULLTEXT index still exists on the schema but isn't queried |
 | MailHog (dev) / SMTP (prod) | Console-log mail backend (§8) | No SMTP server in this native setup; verification/reset links are read out of the structured log instead of a real inbox |
-| 9-stage ingestion CLI | 1 consolidated script | Faster to build and iterate on for the current scope; `profile`, `media`, `index` stages don't apply without ES/image transcoding |
-| Image pipeline → WebP/AVIF, 5 sizes, blurhash | Original Flipkart CDN JPEGs, one upgraded resolution | No image processing pipeline built; CDN images work today but aren't self-hosted or format-optimised |
+| 9-stage ingestion CLI | 5-stage CLI (`fetch`/`profile`/`load`/`media`/`verify`) | §16 closed this — `clean`/`normalise`/`enrich` stay merged into `load` (30K records fit in memory, no benefit to intermediate formats); no `index` stage since there's no Elasticsearch |
+| Image pipeline → WebP/AVIF, 5 sizes, blurhash | WebP + JPEG fallback, one size, real blurhash, self-hosted | §16 built this; AVIF and multiple sizes skipped deliberately — nothing downstream would consume either yet |
 | Brand fuzzy-merge (rapidfuzz ≥92) | Exact case-insensitive dedup only | Time-boxed; ~325 raw brand strings likely still contain near-duplicates (e.g. differently-truncated variants of the same real brand) that a fuzzy pass would catch |
 | Currency: recommendation to convert to BDT at ingest | Left as INR (source currency) | Spec calls this an open question (§30.2), not a decision; converting would mean fabricating an exchange rate, so the real source currency was kept instead |
 
@@ -1689,11 +1895,10 @@ start uvicorn fresh rather than trusting the reloader.
 - Test suite: pytest (59 tests, backend) and vitest (32 tests, frontend) now exist and are green —
   see §12/§14 above for full details, coverage numbers, and the real bugs they caught. No
   Playwright E2E suite yet.
-- **Two open security findings, not yet fixed, both deliberately** — see §13 above for full
-  detail: react-router 7.18.1 (GHSA-qwww-vcr4-c8h2, CSRF bypass) needs a major-version migration
-  across every route/nav call; `starlette` 0.41.3 (~10 CVEs, transitively pinned by
-  `fastapi==0.115.6`) needs a FastAPI major-version migration — confirmed risky firsthand when an
-  unrelated dependency install silently bumped starlette and broke the app outright.
+- **Both previously-open security findings are now fixed (§17 below)**: `fastapi`/`starlette`
+  upgraded (0.115.6/0.41.3 → 0.140.0/1.3.1, zero `pip-audit` findings) and `react-router` upgraded
+  past the CSRF-bypass range (7.18.1 → 8.3.0, zero `npm audit` findings). Both were real major-version
+  migrations, both verified live, not just by re-running the auditor.
 - Security headers, an in-process rate limiter, sitemap/robots/structured-data SEO, an axe-core
   accessibility sweep (fixed real heading-order and unlabeled-control issues), and a Prometheus
   `/metrics` endpoint are all now built — see §13 above. No OTel tracing, no Grafana, no SAST/DAST,
@@ -1725,3 +1930,7 @@ start uvicorn fresh rather than trusting the reloader.
   Launch) is the next logical phase per the spec's own roadmap (§29) and hasn't been started.
 - Review moderation is now built end-to-end — see §14 below. Support-ticket tooling remains
   entirely unbuilt (no schema, no endpoints, no UI) — out of scope for that session.
+- Phase 1's two long-standing gaps (real image self-hosting, full ingestion CLI) are now closed —
+  see §16. Product photos are self-hosted (JPEG + WebP + blurhash), not hotlinked from the source
+  CDN. No automated tests for the image pipeline itself, no AVIF, no multiple responsive sizes, no
+  frontend blurhash placeholder rendering yet — full list in §16.

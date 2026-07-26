@@ -34,7 +34,7 @@ class AppError(Exception):
 
 class ValidationAppError(AppError):
     code = "VALIDATION_ERROR"
-    status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+    status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
     message = "Request failed schema validation."
 
 
@@ -150,7 +150,7 @@ def register_exception_handlers(app: FastAPI) -> None:
             for err in exc.errors()
         ]
         return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             content=_envelope("VALIDATION_ERROR", "Request failed schema validation.", request_id, details),
         )
 

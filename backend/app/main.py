@@ -1,5 +1,8 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from app.api.seo import router as seo_router
@@ -8,6 +11,7 @@ from app.api.v1.router import api_router
 from app.core.config import get_settings
 from app.core.errors import register_exception_handlers
 from app.core.logging import configure_logging, get_logger
+from app.core.storage import MEDIA_ROOT
 from app.middleware.request_id import RequestIDMiddleware
 from app.middleware.response_envelope import ResponseEnvelopeMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
@@ -16,11 +20,19 @@ settings = get_settings()
 configure_logging()
 logger = get_logger("blackcart.main")
 
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    logger.info("startup", env=settings.app_env)
+    yield
+
+
 app = FastAPI(
     title="BlackCart API",
     version="0.1.0",
     docs_url="/docs" if not settings.is_production else None,
     redoc_url=None,
+    lifespan=lifespan,
 )
 
 # Order matters: earlier add_middleware() calls end up innermost (closest to the route), later
@@ -42,6 +54,9 @@ app.add_middleware(
 
 register_exception_handlers(app)
 
+MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
+app.mount("/media", StaticFiles(directory=MEDIA_ROOT), name="media")
+
 app.include_router(operational_router)
 app.include_router(seo_router)
 app.include_router(api_router, prefix=settings.api_prefix)
@@ -54,8 +69,3 @@ app.include_router(api_router, prefix=settings.api_prefix)
 # unauthenticated here, matching Prometheus's usual internal-network-only scrape model; it would
 # need a network-level restriction (or basic auth) in a real deployment, which is Nginx's job.
 Instrumentator().instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
-
-
-@app.on_event("startup")
-async def on_startup():
-    logger.info("startup", env=settings.app_env)

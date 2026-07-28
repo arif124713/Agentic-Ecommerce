@@ -1898,15 +1898,24 @@ someone remembering to run `pip-audit`/`npm audit` by hand.
 
 **Real finding, caught by actually running gitleaks locally before trusting it** (downloaded the
 plain static binary — no Docker needed — rather than assuming the Action would just work): a
-full-history scan immediately flagged `backend/tests/test_order_lifecycle.py:85`,
-`key = "test-idem-key-12345"`, as a `generic-api-key` match in the very first commit. It's a literal
-placeholder idempotency key for a duplicate-checkout test, not a real secret — but it's real
-committed history, so simply re-running gitleaks in CI going forward would have failed on this one
-pre-existing entropy false positive forever. Fixed properly rather than disabling the gate or
-rewriting history: added a `.gitleaksignore` baseline listing the exact fingerprint
-(`commit:file:rule:line`) with a one-line justification, re-ran the same local binary against the
-same history, confirmed `no leaks found`. This is the correct shape for handling a scanner false
-positive — a documented, auditable exception tied to a specific finding, not a blanket disable.
+full-history scan immediately flagged a line in `backend/tests/test_order_lifecycle.py` (a literal
+placeholder idempotency-key string used to test duplicate-checkout handling) as a `generic-api-key`
+match in the very first commit. Not a real secret — but real committed history, so simply re-running
+gitleaks in CI going forward would have failed on this one pre-existing entropy false positive
+forever. Fixed properly rather than disabling the gate or rewriting history: added a
+`.gitleaksignore` baseline listing the exact fingerprint (`commit:file:rule:line`) with a one-line
+justification, re-ran the same local binary against the same history, confirmed `no leaks found`.
+This is the correct shape for handling a scanner false positive — a documented, auditable exception
+tied to a specific finding, not a blanket disable.
+
+**Second real finding, one commit later**: pushing the paragraph above tripped the *same* rule again
+— `gitleaks/gitleaks-action@v2` doesn't do a full-history scan by default the way the local dry run
+did; on a `push` event it runs `gitleaks detect --log-opts=-1`, scanning only the new commit's own
+diff. The prose describing the first finding echoed the flagged pattern closely enough
+(an assignment-shaped `identifier = "value"` string) to get flagged itself, in a completely
+different file, one commit later. Fixed by rewording rather than adding another `.gitleaksignore`
+entry, since this one was actually avoidable — do not describe a flagged secret pattern by
+reproducing its shape.
 
 ### Verified
 

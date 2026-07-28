@@ -1,32 +1,43 @@
 """Ingest the real Flipkart Fashion Products dataset (spec §7) into the catalogue tables.
 
-Condensed clean -> normalise -> enrich -> load pipeline (single script rather than the spec's
-9 separate CLI stages, for now). Source: data/raw/flipkart_fashion_products_dataset.json
-(30k records, downloaded via the Kaggle API — see README).
+A `--stage` CLI over spec §7.2's 9 stages, condensed to the 5 that are actually distinct pipeline
+steps for this dataset/scale: `fetch`, `profile`, `load` (clean+normalise+enrich+load combined —
+see the docstring on `stage_load` for why splitting those three further would just invent an
+intermediate file format nothing else needs at 30k records), `media`, `verify`. `index` isn't a
+stage here at all: there's no Elasticsearch in this stack (documented throughout done.MD), so
+there's nothing for an index stage to do beyond what `load` already does for MySQL search.
 
 The dataset has no variant/stock/rating-count/sold-count data, so — per spec §7.3
 ("out_of_stock maps to stock 0; otherwise stock is randomised... since the dataset has none") —
 those are seeded deterministically from each record's pid so re-running is reproducible.
 
-Run: python scripts/ingest_flipkart.py
+Run: python scripts/ingest_flipkart.py --stage load   (or fetch / profile / media / verify)
 """
 
+import argparse
 import asyncio
+import hashlib
 import html
+import io
 import json
 import random
 import re
 import sys
 import time
+import zipfile
 from collections import defaultdict
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sqlalchemy import insert, select, text  # noqa: E402
+import httpx  # noqa: E402
+from sqlalchemy import bindparam, func, insert, select, text  # noqa: E402
 from ulid import ULID  # noqa: E402
 
+from app.core.config import get_settings  # noqa: E402
+from app.core.image_pipeline import process_image  # noqa: E402
+from app.core.storage import MEDIA_ROOT, get_storage_backend  # noqa: E402
 from app.db.base import Base  # noqa: E402
 from app.db.session import AsyncSessionLocal, engine  # noqa: E402
 from app.models.catalog import Brand, Category, Product, ProductAttribute, ProductImage, ProductVariant  # noqa: E402
@@ -34,6 +45,7 @@ from app.models.catalog import Brand, Category, Product, ProductAttribute, Produ
 ROOT = Path(__file__).resolve().parents[2]
 RAW_PATH = ROOT / "data" / "raw" / "flipkart_fashion_products_dataset.json"
 QUARANTINE_DIR = ROOT / "data" / "quarantine"
+KAGGLE_DATASET_URL = "https://www.kaggle.com/api/v1/datasets/download/aaditshukla/flipkart-fasion-products-dataset"
 
 BATCH_SIZE = 1000
 REJECTION_THRESHOLD = 0.15  # generous: this source dataset is noisier than a curated feed
@@ -264,7 +276,15 @@ def deterministic_rng(seed_key: str) -> random.Random:
     return random.Random(hash(seed_key) & 0xFFFFFFFF)
 
 
-async def load() -> None:
+async def stage_load() -> None:
+    """spec §7.2 stages 3+4+5+7 combined: clean -> normalise -> enrich -> load.
+
+    Kept as one in-memory pass rather than four separate CLI invocations with an intermediate
+    file format between each: at 30k records the whole raw dataset fits comfortably in memory, so
+    persisting "cleaned.jsonl" / "normalised.jsonl" / "enriched.jsonl" between stages would only
+    add serialisation overhead and a made-up intermediate schema, not real resumability or
+    debuggability — profile output (stage_profile) already gives visibility into the same data
+    quality questions those intermediate files would otherwise let you inspect."""
     t0 = time.time()
     print(f"Reading {RAW_PATH} ...")
     with open(RAW_PATH, encoding="utf-8") as f:
@@ -557,5 +577,311 @@ async def load() -> None:
     print(f"Done in {time.time() - t0:.0f}s.")
 
 
+async def stage_fetch() -> None:
+    """spec §7.2 stage 1: download/verify the dataset, checksum it, store raw in data/raw/.
+    Idempotent — refuses to re-download over an existing file (delete it first to re-fetch)."""
+    if RAW_PATH.exists():
+        size_mb = RAW_PATH.stat().st_size / 1e6
+        print(f"{RAW_PATH} already exists ({size_mb:.1f} MB) — skipping. Delete it to re-fetch.")
+        return
+
+    settings = get_settings()
+    if not settings.kaggle_api_key:
+        print("ERROR: kaggle_api_key is not set in .env — cannot fetch the dataset.", file=sys.stderr)
+        sys.exit(1)
+
+    print("Downloading dataset from Kaggle...")
+    async with httpx.AsyncClient(timeout=180.0) as client:
+        resp = await client.get(
+            KAGGLE_DATASET_URL,
+            headers={"Authorization": f"Bearer {settings.kaggle_api_key}"},
+            follow_redirects=True,
+        )
+        resp.raise_for_status()
+        zip_bytes = resp.content
+
+    print(f"Downloaded {len(zip_bytes) / 1e6:.1f} MB zip, extracting...")
+    RAW_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        json_names = [n for n in zf.namelist() if n.endswith(".json")]
+        if not json_names:
+            print("ERROR: no .json file found inside the downloaded archive.", file=sys.stderr)
+            sys.exit(1)
+        with zf.open(json_names[0]) as src, open(RAW_PATH, "wb") as dst:
+            dst.write(src.read())
+
+    checksum = hashlib.sha256(RAW_PATH.read_bytes()).hexdigest()
+    print(f"Saved {RAW_PATH} ({RAW_PATH.stat().st_size / 1e6:.1f} MB), sha256={checksum[:16]}...")
+
+
+def stage_profile() -> None:
+    """spec §7.2 stage 2: emit a data-quality report — null rates, cardinality, outliers,
+    duplicate keys — over the RAW dataset, before any cleaning happens."""
+    with open(RAW_PATH, encoding="utf-8") as f:
+        records = json.load(f)
+    total = len(records)
+    print(f"=== Profile: {total} raw records ({RAW_PATH.name}) ===\n")
+
+    print(f"{'field':<20}{'null/empty':>12}{'%':>8}")
+    for field in (
+        "title", "brand", "category", "sub_category", "description", "actual_price",
+        "selling_price", "average_rating", "images", "product_details", "pid",
+    ):
+        empty = sum(1 for r in records if not r.get(field))
+        print(f"{field:<20}{empty:>12}{empty / total:>8.1%}")
+
+    pids = [r.get("pid") or r.get("_id") for r in records]
+    dup_count = len(pids) - len(set(pids))
+    print(f"\nDuplicate pid/_id count: {dup_count} ({dup_count / total:.1%})")
+
+    brands = {(r.get("brand") or "").strip() for r in records if (r.get("brand") or "").strip()}
+    print(f"Distinct raw brand strings: {len(brands)}")
+
+    cats = {(r.get("category"), r.get("sub_category")) for r in records}
+    print(f"Distinct (category, sub_category) pairs: {len(cats)}")
+
+    bad_prices = sum(
+        1 for r in records
+        if clean_price(r.get("actual_price")) is None or clean_price(r.get("selling_price")) is None
+    )
+    print(f"Unparseable prices: {bad_prices} ({bad_prices / total:.1%})")
+
+    ratings = [clean_rating(r.get("average_rating")) for r in records]
+    out_of_range = sum(1 for r, parsed in zip(records, ratings, strict=True) if r.get("average_rating") and parsed is None)
+    print(f"Ratings present but out of [0,5] or unparseable: {out_of_range}")
+
+    no_images = sum(1 for r in records if not r.get("images"))
+    print(f"Records with zero images: {no_images} ({no_images / total:.1%})")
+
+    out_of_stock = sum(1 for r in records if r.get("out_of_stock"))
+    print(f"out_of_stock=true: {out_of_stock} ({out_of_stock / total:.1%})")
+
+
+_MEDIA_UPDATE_STMT = (
+    ProductImage.__table__.update()
+    .where(ProductImage.id == bindparam("b_id"))
+    .values(
+        url=bindparam("b_url"),
+        url_webp=bindparam("b_url_webp"),
+        blurhash=bindparam("b_blurhash"),
+        width=bindparam("b_width"),
+        height=bindparam("b_height"),
+    )
+)
+
+
+async def _process_chunk(
+    client: httpx.AsyncClient, storage, sem: asyncio.Semaphore, chunk: list
+) -> list[dict]:
+    async def worker(image_id: int, product_id: int, source_url: str) -> dict | None:
+        async with sem:
+            result = await process_image(
+                client, storage, source_url=source_url, dest_key=f"products/{product_id}/{image_id}"
+            )
+            if result is None:
+                # A single retry: the CDN throttles under concurrent load (empirically found —
+                # concurrency=64 with no retry gave a 62-76% failure rate for several minutes
+                # afterward, fully recovering on its own), so a failure is more often a transient
+                # 429/timeout than a genuinely dead URL. One retry after a short backoff recovers
+                # most of those without letting a truly dead URL retry forever.
+                await asyncio.sleep(0.5)
+                result = await process_image(
+                    client, storage, source_url=source_url, dest_key=f"products/{product_id}/{image_id}"
+                )
+        if result is None:
+            return None
+        return {
+            "b_id": image_id,
+            "b_url": result.url,
+            "b_url_webp": result.url_webp,
+            "b_blurhash": result.blurhash,
+            "b_width": result.width,
+            "b_height": result.height,
+        }
+
+    results = await asyncio.gather(*(worker(iid, pid, url) for iid, pid, url in chunk))
+    return [r for r in results if r is not None]
+
+
+async def stage_media(limit: int | None = None) -> None:
+    """spec §7.2 stage 6: download images, validate, transcode to WebP, generate blurhash,
+    upload to storage. Genuinely resumable, not just "safe to re-invoke between runs": processed
+    in fixed-size chunks, each committed to the database before the next chunk starts, so an
+    interrupted run (Ctrl-C, a crash, this exact process getting killed mid-run — which is
+    literally how this bug was found, see done.MD) only ever loses its current in-flight chunk,
+    never the whole run. The first version of this stage queried and gathered every remaining row
+    at once and only wrote to the database after all of them finished — for the ~36k images in
+    this catalogue that meant zero progress persisted for potentially hours."""
+    storage = get_storage_backend()
+    # Empirically tuned against the real Flipkart CDN (rukminim1.flixcart.com): a burst at
+    # concurrency=64 triggered what looks like temporary per-IP throttling (failure rate jumped
+    # to ~62-76% for several minutes afterward, then fully recovered on its own) — a fetch-only
+    # diagnostic at concurrency=20 against the same URLs succeeded 40/40 once the cooldown had
+    # passed. Kept deliberately conservative; a lower, throttle-safe concurrency plus resumability
+    # is more reliable than chasing maximum single-run throughput.
+    concurrency = 16
+    chunk_size = 300
+
+    t0 = time.time()
+    total_done = 0
+    total_failed = 0
+    sem = asyncio.Semaphore(concurrency)
+    # A row that fails every attempt (e.g. a genuinely dead source URL — see README's "some
+    # Flipkart CDN image URLs from this 2021 crawl may be dead") never gets blurhash set, so
+    # without this the `WHERE blurhash IS NULL` query below would keep re-selecting the exact
+    # same rows forever and the loop would never terminate. Found live: the last ~41 rows in the
+    # full-catalogue run were all dead URLs and the loop spun on them indefinitely instead of
+    # exiting. Excluding already-failed ids for the rest of this run guarantees termination;
+    # they stay blurhash IS NULL in the database so a future re-run will still retry them.
+    failed_ids: set[int] = set()
+
+    async with httpx.AsyncClient() as client:
+        while True:
+            async with AsyncSessionLocal() as session:
+                stmt = (
+                    select(ProductImage.id, ProductImage.product_id, ProductImage.url)
+                    .where(ProductImage.blurhash.is_(None))
+                    .order_by(ProductImage.id)
+                    .limit(chunk_size if not limit else min(chunk_size, limit - total_done))
+                )
+                if failed_ids:
+                    stmt = stmt.where(ProductImage.id.notin_(failed_ids))
+                chunk = (await session.execute(stmt)).all()
+
+            if not chunk:
+                break
+
+            updates = await _process_chunk(client, storage, sem, chunk)
+
+            if updates:
+                async with AsyncSessionLocal() as session:
+                    await session.execute(_MEDIA_UPDATE_STMT, updates)
+                    await session.commit()
+
+            succeeded_ids = {u["b_id"] for u in updates}
+            failed_ids.update(row.id for row in chunk if row.id not in succeeded_ids)
+
+            total_done += len(chunk)
+            total_failed += len(chunk) - len(updates)
+            print(
+                f"  {total_done} attempted, {total_done - total_failed} committed, "
+                f"{total_failed} failed — {time.time() - t0:.0f}s elapsed"
+            )
+
+            if limit and total_done >= limit:
+                break
+
+    print(f"Done: {total_done - total_failed} succeeded, {total_failed} failed, in {time.time() - t0:.0f}s")
+    if failed_ids:
+        print(
+            f"  {len(failed_ids)} row(s) failed every attempt (likely dead source URLs) and were "
+            f"skipped for the rest of this run — still blurhash IS NULL, re-run to retry: "
+            f"{sorted(failed_ids)}"
+        )
+
+    if not limit:
+        # Every remaining row got at least one attempt this run (the loop only stops when a
+        # chunk query comes back empty) — safe to backfill card thumbnails from whatever's now
+        # self-hosted, same UPDATE...JOIN pattern stage_load already uses for category tiles.
+        # Product.thumbnail_url has no companion _webp column (a real schema gap, not fixed here
+        # — see done.MD), so cards keep hotlinking-shaped JPEGs; only PDP's gallery gets WebP.
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                text(
+                    """
+                    UPDATE products p
+                    JOIN (
+                        SELECT product_id, url
+                        FROM product_images
+                        WHERE is_primary = 1 AND blurhash IS NOT NULL
+                    ) pi ON pi.product_id = p.id
+                    SET p.thumbnail_url = pi.url
+                    """
+                )
+            )
+            await session.commit()
+            print(f"Backfilled thumbnail_url on {result.rowcount} products from self-hosted primary images.")
+
+
+async def stage_verify() -> None:
+    """spec §7.2 stage 9: assert row counts, orphan checks, price sanity, image reachability.
+    Exits non-zero if any integrity check fails, so a broken ingest can't pass silently."""
+    async with AsyncSessionLocal() as session:
+        product_count = (await session.execute(select(func.count()).select_from(Product))).scalar_one()
+        variant_count = (await session.execute(select(func.count()).select_from(ProductVariant))).scalar_one()
+        image_count = (await session.execute(select(func.count()).select_from(ProductImage))).scalar_one()
+        print(f"Row counts: products={product_count} variants={variant_count} images={image_count}")
+
+        bad_price_count = (
+            await session.execute(select(func.count()).select_from(Product).where(Product.price > Product.mrp))
+        ).scalar_one()
+        print(f"Products with price > mrp: {bad_price_count} (should be 0)")
+
+        no_image_products = (
+            await session.execute(
+                select(func.count())
+                .select_from(Product)
+                .where(~Product.id.in_(select(ProductImage.product_id)))
+            )
+        ).scalar_one()
+        print(f"Products with zero images: {no_image_products} (should be 0)")
+
+        no_variant_products = (
+            await session.execute(
+                select(func.count())
+                .select_from(Product)
+                .where(~Product.id.in_(select(ProductVariant.product_id)))
+            )
+        ).scalar_one()
+        print(f"Products with zero variants: {no_variant_products} (should be 0)")
+
+        unprocessed_images = (
+            await session.execute(select(func.count()).select_from(ProductImage).where(ProductImage.blurhash.is_(None)))
+        ).scalar_one()
+        print(f"Images not yet processed by the media stage: {unprocessed_images}")
+
+        sample_urls = (
+            await session.execute(
+                select(ProductImage.url).where(ProductImage.blurhash.is_not(None)).limit(25)
+            )
+        ).scalars().all()
+        reachable = 0
+        for url in sample_urls:
+            if "/media/" not in url:
+                continue
+            local_path = MEDIA_ROOT / url.split("/media/", 1)[1]
+            if local_path.exists():
+                reachable += 1
+        if sample_urls:
+            print(f"Local media reachability sample: {reachable}/{len(sample_urls)} files exist on disk")
+
+    errors = bad_price_count + no_image_products + no_variant_products
+    if errors:
+        print(f"\nVERIFY FAILED: {errors} integrity issue(s) found")
+        sys.exit(1)
+    print("\nVERIFY OK")
+
+
+async def _run_profile() -> None:
+    stage_profile()  # sync — no I/O worth an event loop, just wrapped so the dispatch table is uniform
+
+
+STAGES = {
+    "fetch": lambda args: stage_fetch(),
+    "profile": lambda args: _run_profile(),
+    "load": lambda args: stage_load(),
+    "media": lambda args: stage_media(limit=args.limit),
+    "verify": lambda args: stage_verify(),
+}
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--stage", choices=sorted(STAGES), default="load", help="Which pipeline stage to run.")
+    parser.add_argument("--limit", type=int, default=None, help="For --stage media: process at most N images.")
+    args = parser.parse_args()
+    asyncio.run(STAGES[args.stage](args))
+
+
 if __name__ == "__main__":
-    asyncio.run(load())
+    main()

@@ -55,6 +55,33 @@ Vite proxies `/api/v1/*` to `http://127.0.0.1:8000` (see `vite.config.ts`), so j
 tables; takes ~5s). Raw dataset lives in `data/raw/` (gitignored — see below), quarantine reports in
 `data/quarantine/`.
 
+## Ingestion CLI & media pipeline
+
+`backend/scripts/ingest_flipkart.py --stage {fetch,profile,load,media,verify}` (spec §7.2), condensed
+from 9 stages to 5 real, independently-runnable ones — see the module docstring for exactly why
+`clean`/`normalise`/`enrich` stay merged into `load` and why there's no `index` stage (no
+Elasticsearch in this stack).
+
+- `fetch` — downloads the dataset from Kaggle (idempotent; skips if `data/raw/...json` exists).
+- `profile` — data-quality report over the raw dataset (null rates, cardinality, duplicate keys)
+  before any cleaning happens.
+- `load` — the existing clean → normalise → enrich → load pass into the catalogue tables.
+- `media` — real image pipeline: downloads every product image, validates it decodes, resizes it,
+  transcodes to WebP + a JPEG fallback, computes a blurhash, and self-hosts the result via
+  `StorageBackend` (`core/storage.py` — local filesystem today, `backend/media/`, served at
+  `/media/*`; a real MinIO/S3 backend is a config + adapter swap). Chunked with incremental
+  commits (`--limit N` to test on a subset), so an interrupted run only loses its current
+  in-flight chunk, not the whole thing — safe to just re-invoke.
+- `verify` — row counts, orphan checks, price sanity, and a local-media-reachability sample;
+  exits non-zero on any integrity failure.
+
+Not attempted: AVIF (needs a separate Pillow codec plugin nothing downstream would consume yet)
+and multiple responsive image sizes (`product_images` only has one `url`/`url_webp` pair per spec
+§8.3's actual schema, and no frontend code requests a smaller variant) — see done.MD for the full
+writeup, including a real CORP-header bug this pipeline's first live verification pass caught
+(images 200'd but silently failed to render until `Cross-Origin-Resource-Policy` was scoped to
+allow `/media/*` cross-origin).
+
 ## What's deferred
 
 The full spec assumes Docker Compose orchestrating MySQL, Redis, Elasticsearch, MinIO, and Celery.
@@ -62,13 +89,11 @@ Docker isn't installed on this machine, so for now:
 - **Redis / Celery** — not wired up. Rate limiting, sessions-as-cache, and background jobs (email,
   invoices, delivery simulation) aren't implemented yet. When ready, install Docker or Redis natively
   and this is the next thing to build.
-- **Elasticsearch** — not wired up; the spec's MySQL `FULLTEXT` fallback search isn't implemented yet
-  either (current listing uses a basic `LIKE` filter behind the `q` param).
-- **Full 9-stage ingestion CLI** (spec §7 specifies separate `fetch`/`profile`/`clean`/`normalise`/
-  `enrich`/`media`/`load`/`index`/`verify` subcommands) — condensed into one script for now. No
-  image transcoding to WebP/AVIF/5-sizes yet; images are served straight from the Flipkart CDN.
-  No brand fuzzy-merge (rapidfuzz) — brands are deduped exactly (case-insensitive) only.
-- **Auth, cart, checkout, payments, admin** — not started (Phase 2 onward).
+- **Elasticsearch** — not wired up; storefront search is real relevance-ranked MySQL `LIKE` matching
+  with a broadened fallback, not the spec's ES/FULLTEXT approach (see done.MD §11 for why the
+  FULLTEXT ngram fallback was tried and abandoned).
+- No brand fuzzy-merge (rapidfuzz) — brands are deduped exactly (case-insensitive) only.
+- **Support tickets, CMS/banners** — not started.
 
 ## Secrets
 

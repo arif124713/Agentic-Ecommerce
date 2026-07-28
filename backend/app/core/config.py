@@ -24,12 +24,18 @@ class Settings(BaseSettings):
     app_secret_key: str = Field(default="dev-secret-change-me-please-32bytes", alias="APP_SECRET_KEY")
     app_base_url: str = Field(default="http://localhost:5173", alias="APP_BASE_URL")
     api_prefix: str = Field(default="/api/v1", alias="API_PREFIX")
+    # Distinct from app_base_url (the frontend's origin, used for email links): this is the
+    # backend's OWN origin, used to build absolute /media URLs an <img> tag can fetch directly —
+    # cross-port image loads don't need CORS the way fetch/XHR would, so no proxy config needed.
+    backend_base_url: str = Field(default="http://127.0.0.1:8000", alias="BACKEND_BASE_URL")
 
     mysql_user: str = Field(default="root", alias="MYSQL_USER")
     mysql_password: str = Field(default="", alias="mysql_password")
     mysql_host: str = Field(default="127.0.0.1", alias="MYSQL_HOST")
     mysql_port: int = Field(default=3306, alias="MYSQL_PORT")
     mysql_db: str = Field(default="blackcart", alias="MYSQL_DB")
+
+    kaggle_api_key: str | None = Field(default=None, alias="kaggle_api_key")
 
     database_pool_size: int = Field(default=10, alias="DATABASE_POOL_SIZE")
     database_max_overflow: int = Field(default=5, alias="DATABASE_MAX_OVERFLOW")

@@ -27,6 +27,8 @@ class CategoryTreeNode(CategoryOut):
 class ProductImageOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     url: str
+    url_webp: str | None = None
+    blurhash: str | None = None
     alt_text: str | None = None
     is_primary: bool
 

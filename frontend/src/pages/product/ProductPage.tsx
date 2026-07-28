@@ -159,14 +159,17 @@ export function ProductPage() {
       <div className="grid grid-cols-1 gap-10 md:grid-cols-[minmax(0,420px)_1fr]">
         <div className="aspect-3/4 w-full max-w-sm overflow-hidden rounded-(--radius-lg) bg-surface">
           {primaryImage ? (
-            <img
-              src={primaryImage.url}
-              alt={primaryImage.alt_text ?? product.title}
-              width={800}
-              height={1000}
-              fetchPriority="high"
-              className="h-full w-full object-cover"
-            />
+            <picture>
+              {primaryImage.url_webp ? <source srcSet={primaryImage.url_webp} type="image/webp" /> : null}
+              <img
+                src={primaryImage.url}
+                alt={primaryImage.alt_text ?? product.title}
+                width={800}
+                height={1000}
+                fetchPriority="high"
+                className="h-full w-full object-cover"
+              />
+            </picture>
           ) : null}
         </div>
 

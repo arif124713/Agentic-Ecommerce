@@ -35,7 +35,14 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=()"
         response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
-        response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+        # /media is self-hosted product imagery meant to be <img>-embedded from the frontend's
+        # own origin (localhost:5173 vs this API's 127.0.0.1:8000 — different origins even on the
+        # same machine); CORP: same-origin would have the browser silently refuse to render them
+        # there even though the fetch itself succeeds (found live: a real product image 200'd but
+        # never painted until this was narrowed down to CORP, not a broken file or wrong URL).
+        response.headers["Cross-Origin-Resource-Policy"] = (
+            "cross-origin" if request.url.path.startswith("/media/") else "same-origin"
+        )
         response.headers["Content-Security-Policy"] = _CSP
         if settings.is_production:
             # Only sent over HTTPS in practice, but the header itself is harmless to set

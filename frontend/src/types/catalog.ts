@@ -63,6 +63,8 @@ export interface ProductVariant {
 
 export interface ProductImage {
   url: string
+  url_webp: string | null
+  blurhash: string | null
   alt_text: string | null
   is_primary: boolean
 }

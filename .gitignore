@@ -21,6 +21,9 @@ frontend/dist/
 data/raw/
 data/quarantine/
 
+# Self-hosted product media (large, regeneratable via `python scripts/ingest.py --stage media`)
+backend/media/
+
 # Editor/OS
 .vscode/
 .idea/

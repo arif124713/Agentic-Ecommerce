@@ -9,6 +9,9 @@ const NAV_ITEMS = [
   { label: 'Users', to: '/admin/users' },
   { label: 'Coupons', to: '/admin/coupons' },
   { label: 'Reviews', to: '/admin/reviews' },
+  { label: 'CMS Pages', to: '/admin/cms/pages' },
+  { label: 'Banners', to: '/admin/cms/banners' },
+  { label: 'Support', to: '/admin/support' },
 ]
 
 export function AdminLayout() {

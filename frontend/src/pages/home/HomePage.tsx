@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/Button'
 import { getApiErrorMessage } from '@/services/apiClient'
 import { SeoHead } from '@/components/seo/SeoHead'
 import { organizationAndWebsiteSchema } from '@/lib/structuredData'
+import { BannerStrip } from '@/components/home/BannerStrip'
 
 export function HomePage() {
   const categories = useQuery({
@@ -55,6 +56,8 @@ export function HomePage() {
           ) : null}
         </div>
       </section>
+
+      <BannerStrip placement="home_promo" />
 
       <section className="container-page py-16">
         <div className="mb-8 flex items-end justify-between">

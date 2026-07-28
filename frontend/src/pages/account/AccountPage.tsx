@@ -11,7 +11,7 @@ const NAV_ITEMS = [
   { label: 'Addresses', href: null },
   { label: 'Wishlist', href: '/account/wishlist' },
   { label: 'Settings', href: null },
-  { label: 'Support', href: null },
+  { label: 'Support', href: '/account/support' },
 ]
 
 export function AccountPage() {

@@ -19,6 +19,7 @@ from app.models.catalog import (
     ProductImage,
     ProductVariant,
 )
+from app.models.cms import Banner, CmsPage
 from app.models.commerce import (
     Address,
     Cart,
@@ -43,6 +44,7 @@ from app.models.discovery import (
     WishlistItem,
 )
 from app.models.review import Review
+from app.models.support import SupportTicket, TicketMessage
 
 __all__ = [
     "Base",
@@ -82,4 +84,8 @@ __all__ = [
     "StockAlert",
     "NewsletterSubscriber",
     "Review",
+    "CmsPage",
+    "Banner",
+    "SupportTicket",
+    "TicketMessage",
 ]

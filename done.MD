@@ -34,8 +34,13 @@ frontend: tsc/oxlint/vitest/build) — building it from scratch surfaced and fix
 previously-undetected migration bugs (the baseline migration only ever created one of seven
 catalogue tables). See §15 below. Phase 1's image pipeline gap and the two previously-open
 dependency CVEs (react-router CSRF-bypass range, starlette's ~10 CVEs) are now closed — see §16/§17
-below; `pip-audit`/`npm audit` both report zero known vulnerabilities. Load-testing and
-deployment/DR remain unstarted. Running **natively on Windows** — no
+below; `pip-audit`/`npm audit` both report zero known vulnerabilities and are now wired into CI as
+recurring gates alongside a gitleaks secret scan (§18). A real k6 load test confirmed spec §23's API
+latency budget with room to spare (§19), and a real, actually-executed backup/restore drill against
+local MySQL passed with an exact row-count match (§20); operational runbooks now exist for this
+project's own recurring failure modes (§21). CMS pages, banners, and the support ticket system —
+previously entirely unbuilt — are now **end-to-end functional**, verified live through the browser
+as both a customer and an admin (§22). Running **natively on Windows** — no
 Docker/Redis/Celery/Elasticsearch (see §5/§6 below for why and what that changes).
 
 ---
@@ -2067,6 +2072,101 @@ concurrency test), and this session's own §17/§18/§20 findings.
 
 ---
 
+## 22. CMS pages, banners, and support tickets (spec §8.3, §3.2/§3.3, §10.8) ✅
+
+Closes three of the "never built at all" gaps flagged when this progress log's own status was last
+summarized: CMS pages/banners and the support ticket system. Both `cms:page:write` and
+`support:ticket:manage` permissions were already seeded (Phase 2, spec §3.3's matrix) but had zero
+backend scaffolding until now — built end-to-end in one pass: models → migration → repositories →
+services → routers → pytest → frontend (customer-facing + admin) → live browser verification,
+same discipline as every other phase in this project.
+
+### Schema
+
+New `models/cms.py` (`CmsPage`, `Banner` — both `TimestampMixin, SoftDeleteMixin`, matching spec
+§8.1's soft-delete convention for catalogue-like content) and `models/support.py` (`SupportTicket`,
+addressed by `public_id` ULID per spec §8.1's enumeration-resistance rule since it's a genuinely
+customer-facing resource, unlike addresses/cart-items which stayed plain-integer per Phase 3's own
+documented reasoning; `TicketMessage`, threaded via a real relationship). Migration
+`4d9605d72d67_cms_and_support` — the now-familiar FK/index-drop-order fix applied proactively to
+`downgrade()` before ever running it (the pattern has recurred in every single migration this
+project has ever written); full `upgrade → downgrade → upgrade → check` cycle verified clean on the
+first attempt.
+
+### Backend
+
+- **CMS** (`repositories/cms.py`, `services/cms_service.py` + `services/admin/cms_service.py`,
+  `api/v1/public/cms.py` + `api/v1/admin/cms.py`): `GET /pages/{slug}` returns only
+  `status='published' AND deleted_at IS NULL` — a soft-deleted-but-still-"published" page is
+  correctly excluded, not just draft ones. `GET /banners?placement=` filters by active flag and an
+  optional start/end date window. Admin gets full CRUD plus soft-delete/restore for pages (mirrors
+  the existing admin-product restore flow exactly) and CRUD for banners.
+- **Support tickets** (`repositories/support.py`, `services/support_service.py` (customer,
+  ownership-scoped) + `services/admin/support_service.py` (unscoped, permission-gated),
+  `api/v1/account/support.py` + `api/v1/admin/support.py`): customer create/list/reply; admin
+  list/filter/assign/reply/status-change. A staff reply auto-transitions `open → pending`; a
+  customer reply to a `resolved`/`closed` ticket reopens it to `open` — both small, deliberate
+  state rules living in the service layer, not scattered across routers, matching the order state
+  machine's own "one place changes status" discipline.
+
+### Real bug caught before it ever ran: an ambiguous-FK relationship, same root cause as Phase 2's
+
+`SupportTicket` has two FKs to `users` (`user_id`, `assignee_user_id`). Writing
+`assignee: Mapped["User"] = relationship(...)` without an explicit `foreign_keys=` would have hit
+the exact `AmbiguousForeignKeysError` documented in §8 for `user_roles`' `user_id`/`granted_by`
+pair — caught by recognizing the shape before running anything, not by hitting the crash first this
+time. Also caught mid-build, by tracing each call site rather than assuming: `AdminSupportService`
+first accessed `ticket.assignee`/`ticket.messages` on rows loaded via a repository method that
+didn't eager-load either relationship — would have crashed with `MissingGreenlet` the moment any
+admin ticket-list or ticket-detail request actually ran. Fixed by making `assignee` an unconditional
+eager-load (cheap single-row join, needed by nearly every caller) and making `with_messages` an
+explicit, deliberate parameter at every call site instead of a silently-wrong default.
+
+### Verified
+
+**Backend**: 12 new pytest cases (`test_cms.py`, `test_support.py`) — published-vs-draft-vs-deleted
+visibility, slug-uniqueness conflicts, restore, banner placement/active-window filtering, an
+explicit IDOR check (a second customer gets `404`, not `403`, for another user's ticket — matching
+this project's own no-enumeration convention), the open→pending and resolved→open auto-transitions,
+and permission-gating on every admin endpoint. Full suite: 59 → **71 passed**. Also curl-verified
+the full flow end-to-end (create page → publish → public fetch; create banner → public fetch by
+placement; create ticket → admin list/assign/reply → customer sees the reply) before writing a
+single frontend line, including the two ownership/permission checks (a second registered user gets
+`404` on another's ticket and empty on their own list; a plain customer gets `403` on every admin
+endpoint).
+
+**Frontend**: `pages/cms/CmsPage.tsx` at `/pages/:slug` (renders trusted admin-authored HTML via
+`dangerouslySetInnerHTML` — documented as a deliberate trust-boundary choice, not an oversight, same
+class of trust as any other admin-entered catalogue content); `components/home/BannerStrip.tsx`,
+additive-only on the home page, rendering nothing when a placement has no active banners (same
+convention as `ProductRail`); the account nav's long-standing "Support (soon)" placeholder is now a
+real `SupportPage`/`TicketDetailPage` pair. Admin: CMS pages and banners list/form pages, and a
+support ticket queue (status-filterable) + detail page (thread, reply, status dropdown, assign-by-
+numeric-id — no user-search-by-name endpoint exists yet, a documented simplification). `tsc -b`,
+`oxlint`, and `vitest` (32/32) all clean.
+
+**Live in Chrome**, full loop, not just automated tests: home page showing the real banner
+(broken image icon expected — a placeholder URL from curl testing, not a real uploaded asset) and
+`/pages/about-us` rendering real HTML correctly (`<p>` tags interpreted, not shown as literal text);
+signed in as the existing promoted admin, opened `/account/support`, saw the ticket created earlier
+via curl, opened it, replied as the customer, watched the thread update; switched to
+`/admin/support`, saw the same ticket in the queue, opened it, replied as staff, changed status to
+Resolved via the dropdown; switched back to the customer's own ticket view and confirmed the
+"replying will reopen this ticket" warning appeared and the resolved status was visible;
+created a brand-new CMS page through the actual admin form (slug/title/HTML body/status) and
+confirmed the "Saved." confirmation and edit-mode transition.
+
+**A real flake investigated and ruled out, not shipped as a fix**: the banner-strip network request
+intermittently returned a `503` — but only when routed through the Chrome automation extension.
+Reproduced the exact same 5-concurrent-request page-load pattern via plain `curl` (single-shot and
+a 20-request concurrent burst) against the same running backend: **100% success**, every time. The
+backend's own access log confirmed the failing browser requests never arrived server-side at all in
+several cases — the failure happens between the extension's interception layer and the page, not in
+this project's code. Documented here rather than "fixed" with a change that would have papered over
+a problem that doesn't exist in the actual application.
+
+---
+
 ## Stack deviations from spec §5 (and why)
 
 | Spec says | Built instead | Why |
@@ -2134,8 +2234,9 @@ start uvicorn fresh rather than trusting the reloader.
   there, not repeated here. Storefront search is now real token-precise relevance search with a
   broadened fallback, not the plain `LIKE` filter this note used to describe. Phase 6 (Hardening &
   Launch) is the next logical phase per the spec's own roadmap (§29) and hasn't been started.
-- Review moderation is now built end-to-end — see §14 below. Support-ticket tooling remains
-  entirely unbuilt (no schema, no endpoints, no UI) — out of scope for that session.
+- Review moderation is now built end-to-end — see §14 below. Support-ticket tooling, CMS pages, and
+  banners are now also built end-to-end — see §22. Bulk product import/export, an audit-log viewer,
+  and feature flags remain entirely unbuilt.
 - Phase 1's two long-standing gaps (real image self-hosting, full ingestion CLI) are now closed —
   see §16. Product photos are self-hosted (JPEG + WebP + blurhash), not hotlinked from the source
   CDN. No automated tests for the image pipeline itself, no AVIF, no multiple responsive sizes, no

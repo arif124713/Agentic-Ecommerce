@@ -11,6 +11,9 @@ import { ResetPasswordPage } from '@/pages/auth/ResetPasswordPage'
 import { VerifyEmailPage } from '@/pages/auth/VerifyEmailPage'
 import { AccountPage } from '@/pages/account/AccountPage'
 import { WishlistPage } from '@/pages/account/WishlistPage'
+import { SupportPage } from '@/pages/account/SupportPage'
+import { TicketDetailPage } from '@/pages/account/TicketDetailPage'
+import { CmsPage } from '@/pages/cms/CmsPage'
 import { CartPage } from '@/pages/cart/CartPage'
 import { CheckoutPage } from '@/pages/checkout/CheckoutPage'
 import { OrderConfirmationPage } from '@/pages/orders/OrderConfirmationPage'
@@ -27,6 +30,12 @@ import { UserDetailPage } from '@/pages/admin/UserDetailPage'
 import { CouponsListPage } from '@/pages/admin/CouponsListPage'
 import { CouponFormPage } from '@/pages/admin/CouponFormPage'
 import { ReviewsQueuePage } from '@/pages/admin/ReviewsQueuePage'
+import { CmsPagesListPage } from '@/pages/admin/CmsPagesListPage'
+import { CmsPageFormPage } from '@/pages/admin/CmsPageFormPage'
+import { BannersListPage } from '@/pages/admin/BannersListPage'
+import { BannerFormPage } from '@/pages/admin/BannerFormPage'
+import { SupportQueuePage } from '@/pages/admin/SupportQueuePage'
+import { AdminTicketDetailPage } from '@/pages/admin/AdminTicketDetailPage'
 
 export const router = createBrowserRouter([
   {
@@ -36,6 +45,7 @@ export const router = createBrowserRouter([
       { path: '/c/:categorySlug', element: <CatalogPage /> },
       { path: '/search', element: <CatalogPage /> },
       { path: '/p/:productSlug', element: <ProductPage /> },
+      { path: '/pages/:slug', element: <CmsPage /> },
       { path: '/auth/login', element: <LoginPage /> },
       { path: '/auth/register', element: <RegisterPage /> },
       { path: '/auth/forgot', element: <ForgotPasswordPage /> },
@@ -55,6 +65,22 @@ export const router = createBrowserRouter([
         element: (
           <ProtectedRoute>
             <WishlistPage />
+          </ProtectedRoute>
+        ),
+      },
+      {
+        path: '/account/support',
+        element: (
+          <ProtectedRoute>
+            <SupportPage />
+          </ProtectedRoute>
+        ),
+      },
+      {
+        path: '/account/support/:publicId',
+        element: (
+          <ProtectedRoute>
+            <TicketDetailPage />
           </ProtectedRoute>
         ),
       },
@@ -109,6 +135,14 @@ export const router = createBrowserRouter([
       { path: 'coupons/new', element: <CouponFormPage /> },
       { path: 'coupons/:id', element: <CouponFormPage /> },
       { path: 'reviews', element: <ReviewsQueuePage /> },
+      { path: 'cms/pages', element: <CmsPagesListPage /> },
+      { path: 'cms/pages/new', element: <CmsPageFormPage /> },
+      { path: 'cms/pages/:id', element: <CmsPageFormPage /> },
+      { path: 'cms/banners', element: <BannersListPage /> },
+      { path: 'cms/banners/new', element: <BannerFormPage /> },
+      { path: 'cms/banners/:id', element: <BannerFormPage /> },
+      { path: 'support', element: <SupportQueuePage /> },
+      { path: 'support/:publicId', element: <AdminTicketDetailPage /> },
     ],
   },
 ])

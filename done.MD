@@ -2042,6 +2042,31 @@ requirement with an actually-executed, actually-verified drill — not a written
 
 ---
 
+## 21. Phase 6 hardening, continued — operational runbooks (spec §29) ✅
+
+spec §29's Phase 6 deliverable list names runbooks explicitly. Wrote
+[`RUNBOOKS.md`](./RUNBOOKS.md) at the repo root rather than a generic "check the logs, restart the
+service" template — every entry is a real incident this project actually hit (usually more than
+once), pulled from this file's own history: the Windows `uvicorn --reload` unreliability, the
+MySQL FK/index-drop migration-ordering bug (4 recurrences), the stale-ORM-read-after-lock bug class
+(3 recurrences: cart, inventory adjust, the 50-concurrent-checkout oversell test), this session's
+own untracked-file CI break (§17's postscript), the gitleaks scope mismatch (§18), the backup
+script's silent-no-op compression bug (§20), and a port-collision gotcha from this session's own
+load-test setup. Each entry follows Symptom → Diagnosis → Fix → *why this keeps coming back* (the
+actual root-cause class, not just the one-off fix) — the last part is deliberate: several of these
+recurred because the fix was applied at the call site each time rather than the pattern being
+recognized, and a runbook that only lists the fix invites the same rediscovery cost next time.
+
+### Verified
+
+Read back against done.MD's own history to confirm every cited incident is accurately described
+(not paraphrased into something that sounds plausible but drifts from what actually happened) —
+cross-checked line numbers/section references for the migration-ordering bug (§8/§9/§10/§11's
+`cb7fb7c4289c`/`7e6e6ca89efc` migrations), the stale-read bug class (§9 bug #2, §10 bug #1, §12's
+concurrency test), and this session's own §17/§18/§20 findings.
+
+---
+
 ## Stack deviations from spec §5 (and why)
 
 | Spec says | Built instead | Why |

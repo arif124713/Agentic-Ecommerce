@@ -106,15 +106,20 @@ be committed.
 `.github/workflows/ci.yml` runs on every push/PR to `main` (and can be triggered manually via
 `workflow_dispatch`):
 
+- **secrets** job — `gitleaks` full-history secret scan. False positives are handled via
+  `.gitleaksignore` with a documented fingerprint + justification, never a blanket disable — see
+  done.MD §18 for a real one it caught (and a second, self-inflicted one from done.MD's own prose).
 - **backend** job — spins up a real MySQL 8 service container, then runs `ruff`, `pytest`
-  (with coverage) against a fresh `blackcart_test` database, and a full `alembic upgrade head →
-  downgrade base → upgrade head → check` cycle against a second, separate empty database
-  (`blackcart_ci`) — this is a genuine from-scratch migration test, which is what actually caught
-  and fixed three latent migration-ordering bugs while this workflow was being built (see done.MD's
-  Phase 7 write-up for the git/CI-phase — the baseline migration only used to create one table out
-  of seven). `mypy` also runs but is informational (`continue-on-error`), not a hard gate — see the
-  comment in the workflow file for why.
-- **frontend** job — `npm ci`, `tsc -b`, `oxlint`, `vitest run`, `vite build`.
+  (with coverage) against a fresh `blackcart_test` database, `pip-audit` against
+  `requirements.txt` (0 known vulnerabilities is the gate, per spec §2.3), and a full
+  `alembic upgrade head → downgrade base → upgrade head → check` cycle against a second, separate
+  empty database (`blackcart_ci`) — this is a genuine from-scratch migration test, which is what
+  actually caught and fixed three latent migration-ordering bugs while this workflow was being built
+  (see done.MD §15 — the baseline migration only used to create one table out of seven). `mypy` also
+  runs but is informational (`continue-on-error`), not a hard gate — see the comment in the workflow
+  file for why.
+- **frontend** job — `npm ci`, `npm audit --audit-level=high`, `tsc -b`, `oxlint`, `vitest run`,
+  `vite build`.
 
 ### Branch protection (do this in GitHub's UI — not something this repo/CI config can set for you)
 
@@ -122,13 +127,25 @@ Once this repo has a GitHub remote:
 
 1. **Settings → Branches → Add branch protection rule**, pattern `main`.
 2. Enable **"Require a pull request before merging"**.
-3. Enable **"Require status checks to pass before merging"**, then search for and select both
-   `Backend (ruff · mypy · pytest+coverage · alembic)` and `Frontend (tsc · oxlint · vitest · build)`
-   — they only appear in that search list after the workflow has run at least once on the repo, so
-   push once first, then come back and add the rule.
+3. Enable **"Require status checks to pass before merging"**, then search for and select all three:
+   `Secret scan (gitleaks)`, `Backend (ruff · mypy · pytest+coverage · alembic)`, and
+   `Frontend (tsc · oxlint · vitest · build)` — they only appear in that search list after the
+   workflow has run at least once on the repo, so push once first, then come back and add the rule.
 4. Optionally enable **"Require branches to be up to date before merging"** so a stale PR must
    rebase/merge `main` before the checks are trusted.
 5. Consider **"Do not allow bypassing the above settings"** to apply the rule to admins too.
+
+## Load testing & backup/restore
+
+- `k6 run -e BASE_URL=http://127.0.0.1:PORT backend/scripts/loadtest.js` against a locally-running
+  backend. Verifies spec §23's API latency budget (reads p95 < 200ms, writes p95 < 500ms) — see
+  done.MD §19 for real measured numbers.
+- `python backend/scripts/backup_restore.py drill` — a real, actually-run backup/restore drill
+  against local MySQL (spec §26). See done.MD §20.
+
+See [`RUNBOOKS.md`](./RUNBOOKS.md) for real incidents this project has hit (stale-reload, migration
+FK/index ordering, the stock-lock stale-read bug class, CI checkout gaps, scanner false positives,
+port collisions) with symptom → diagnosis → fix for each.
 
 ## Known gaps to close next
 
@@ -136,7 +153,10 @@ Once this repo has a GitHub remote:
   500 KB before gzip) — no route-level code splitting yet.
 - `mypy` runs in CI but isn't a hard gate yet — ~25 pre-existing type errors (mostly ORM-object-vs-
   Pydantic-schema mismatches mypy can't see through `from_attributes=True`) need fixing first.
-- No Playwright E2E suite, load testing, or dependency/SAST scanning in CI yet.
+- No Playwright E2E suite yet. Load testing and dependency/secret scanning now exist (see above and
+  Continuous Integration) but aren't wired into CI as a recurring, unattended job — load testing
+  needs a running server + seeded data, not a fit for a per-push CI gate; dependency/secret scanning
+  already runs on every push (see Continuous Integration above).
 
 ## Directory layout
 

@@ -24,6 +24,9 @@ data/quarantine/
 # Self-hosted product media (large, regeneratable via `python scripts/ingest.py --stage media`)
 backend/media/
 
+# Local DB backups (spec §26 — real dumps of local dev data, never a distributable artifact)
+backend/backups/
+
 # Editor/OS
 .vscode/
 .idea/

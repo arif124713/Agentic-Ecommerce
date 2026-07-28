@@ -65,7 +65,7 @@ Docker/Redis/Celery/Elasticsearch (see §5/§6 below for why and what that chang
 | 22 | Security | 🟡 | Auth/IDOR/CSRF test suite (§12); security headers, an in-process rate limiter with 429+Retry-After, and two dependency audit rounds (§13: 4 packages + 1 fail-fast fix; §17: fastapi/starlette/pillow/pytest CVEs and the react-router CSRF-bypass range both closed, `pip-audit`/`npm audit` now zero) — §13/§17 below. No audit logging, no file-upload pipeline (no uploads exist yet), no gitleaks/SBOM, no pip-audit/npm-audit wired into CI yet (§15) |
 | 23 | Performance budgets | 🟡 | API p95 latency budget verified with a real k6 load test (§19: reads 91-123ms vs <200ms budget, writes 99-111ms vs <500ms budget, 0% errors) — see §19 below. Lighthouse/LCP/frontend performance budgets not measured yet |
 | 24 | Testing strategy | 🟡 | Real pytest (backend, 59 cases) + vitest (frontend, 32 cases) suites now exist covering the spec's flagged critical scenarios — full details in §12/§14 below; no Playwright E2E, load testing, or contract testing |
-| 25–26 | CI/CD, deployment | 🟡 | Git repo initialized, GitHub Actions CI running ruff/pytest+coverage/alembic-from-scratch (backend) and tsc/oxlint/vitest/build (frontend) — §15 below. No CD/deployment pipeline, no remote pushed yet, branch protection needs manual GitHub setup (guidance in README) |
+| 25–26 | CI/CD, deployment | 🟡 | Git repo pushed to a real GitHub remote, Actions CI confirmed green on real runners (ruff/mypy/pytest+coverage/alembic/pip-audit gate for backend; tsc/oxlint/vitest/build/npm-audit gate for frontend; a separate gitleaks secret-scan job) — §15/§17/§18 below. A real, passing backup/restore drill against local MySQL now exists too — §20 below. No CD/deployment pipeline (nowhere to deploy to yet), branch protection needs manual GitHub setup (guidance in README) |
 | 27 | Repository structure | 🟡 | Backend/frontend layout matches; `.github/workflows/` now exists (§15); no `docker/`, `nginx/`, `infra/` yet |
 | 28–31 | Feature flags, roadmap, risks, appendices | ⬜ | Reference material, not implementation |
 
@@ -1982,6 +1982,63 @@ Two full k6 runs (broken script, then fixed script) against the live local backe
 seeded database. First run: reads clean, writes at 5% failure rate traced to root cause via
 structured backend logs. Second run, post-fix: 100% checks passed, both latency thresholds green,
 0% `http_req_failed`. Backend and k6 processes cleanly stopped afterward; no lingering state.
+
+---
+
+## 20. Phase 6 hardening, continued — a real backup/restore drill (spec §26) ✅
+
+spec §26 (Deployment, Backup & Disaster Recovery) and §29's Phase 6 exit criteria both name a
+tested backup/restore procedure; done.MD had this listed as entirely unstarted. No Docker/cloud
+snapshot service in this native-Windows setup, so this is a genuine `mysqldump`/`mysql` round trip
+against the local install — the property that actually matters (a backup is *provably restorable*,
+not just that a dump command exits 0) doesn't depend on where the file ends up living.
+
+Added `backend/scripts/backup_restore.py` with three subcommands: `backup` (dumps the configured
+database to a timestamped `.sql.gz` under `backend/backups/`, gitignored — real local data, not a
+distributable artifact), `restore` (restores an arbitrary dump into a named target database), and
+`drill` (the actual DR exit criterion: backs up the real database, restores it into a disposable
+`*_restore_drill` database, compares row counts across the financial-record and core-catalogue
+tables that matter most — `users`, `products`, `product_variants`, `orders`, `order_items`,
+`payments`, `refunds` — then drops the drill database).
+
+### Real bug caught by actually running it, not by trusting the exit code
+
+First run "succeeded" (`mysqldump` exited 0, a 23.9 MB file appeared), then failed at the restore
+step with a binary-garbage MySQL parse error. Checked the actual bytes on disk instead of assuming
+the `.gz` extension meant anything: the file was **plain ASCII text**, not gzip-compressed at all,
+despite being written through `gzip.open(path, "wb")`. Root cause: `subprocess.run(cmd, stdout=gz)`
+was passed a `gzip.GzipFile` object as `stdout=`, but `subprocess` redirects a child process's
+output at the raw OS file-descriptor level (`GzipFile.fileno()` just proxies to the underlying
+file) — so `mysqldump`'s output bypassed Python's gzip layer entirely and was written raw to a file
+merely *named* `.gz`. The restore step's matching `gzip.open(dump_path, "rb")` then genuinely tried
+(and partially managed, via decompression of non-gzip data) to interpret that plain text as a gzip
+stream, feeding `mysql`'s stdin binary garbage. Fixed by buffering through memory instead of handing
+subprocess a file-like object at either end: `mysqldump`'s output is captured via
+`subprocess.run(..., capture_output=True)` and written through `gzip.open().write()` in Python;
+`restore` reads the dump back with `gzip.open().read()` and passes the decompressed bytes via
+`subprocess.run(..., input=...)`. Same underlying lesson as the CORP-header and `populate_existing`
+bugs from earlier phases: a mechanism that looks correct from the outside (right extension, right
+library call, exit code 0) can still silently do nothing at all in the one respect that matters.
+
+### Verified — a real, passing drill
+
+Re-ran after the fix: dump correctly compressed (**3.27 MB**, vs. the earlier fake "23.9 MB gzip"
+that was actually uncompressed plain text — a believable ratio for repetitive SQL insert statements),
+restored cleanly into `blackcart_restore_drill`, and every checked table's row count matched the
+source database exactly:
+
+| Table | Source | Restored | Match |
+|---|---:|---:|:---:|
+| users | 3 | 3 | ✅ |
+| products | 8,103 | 8,103 | ✅ |
+| product_variants | 48,618 | 48,618 | ✅ |
+| orders | 7 | 7 | ✅ |
+| order_items | 11 | 11 | ✅ |
+| payments | 7 | 7 | ✅ |
+| refunds | 2 | 2 | ✅ |
+
+Drill database dropped afterward, leaving no residual state. This closes spec §26's backup/restore
+requirement with an actually-executed, actually-verified drill — not a written-but-never-run runbook.
 
 ---
 

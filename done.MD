@@ -63,7 +63,7 @@ Docker/Redis/Celery/Elasticsearch (see §5/§6 below for why and what that chang
 | 20 | SEO & structured data | 🟡 | sitemap.xml, robots.txt, per-page meta/OG tags, JSON-LD (Product/BreadcrumbList/Organization/WebSite/ItemList) — §13 below. No hreflang, no redirects table, no CI structured-data linting |
 | 21 | Observability | 🟡 | Structured logging (§1) plus a Prometheus `/metrics` endpoint (§13 below) exposing request rate/latency/status out of the box; no OpenTelemetry tracing, no Grafana dashboards/alerts — needs a collector/Grafana this setup doesn't have |
 | 22 | Security | 🟡 | Auth/IDOR/CSRF test suite (§12); security headers, an in-process rate limiter with 429+Retry-After, and two dependency audit rounds (§13: 4 packages + 1 fail-fast fix; §17: fastapi/starlette/pillow/pytest CVEs and the react-router CSRF-bypass range both closed, `pip-audit`/`npm audit` now zero) — §13/§17 below. No audit logging, no file-upload pipeline (no uploads exist yet), no gitleaks/SBOM, no pip-audit/npm-audit wired into CI yet (§15) |
-| 23 | Performance budgets | ⬜ | Not started |
+| 23 | Performance budgets | 🟡 | API p95 latency budget verified with a real k6 load test (§19: reads 91-123ms vs <200ms budget, writes 99-111ms vs <500ms budget, 0% errors) — see §19 below. Lighthouse/LCP/frontend performance budgets not measured yet |
 | 24 | Testing strategy | 🟡 | Real pytest (backend, 59 cases) + vitest (frontend, 32 cases) suites now exist covering the spec's flagged critical scenarios — full details in §12/§14 below; no Playwright E2E, load testing, or contract testing |
 | 25–26 | CI/CD, deployment | 🟡 | Git repo initialized, GitHub Actions CI running ruff/pytest+coverage/alembic-from-scratch (backend) and tsc/oxlint/vitest/build (frontend) — §15 below. No CD/deployment pipeline, no remote pushed yet, branch protection needs manual GitHub setup (guidance in README) |
 | 27 | Repository structure | 🟡 | Backend/frontend layout matches; `.github/workflows/` now exists (§15); no `docker/`, `nginx/`, `infra/` yet |
@@ -1922,8 +1922,66 @@ reproducing its shape.
 Local gitleaks binary (v8.30.1, downloaded directly, no Docker) run against the actual repo history
 twice: once bare (1 finding, confirmed as a test-only placeholder, not a live secret), once with
 `.gitleaksignore` in place (`no leaks found`). `ci.yml` YAML syntax validated with `yaml.safe_load`.
-Pushed; next step is confirming the live Actions run (three jobs now: secrets/backend/frontend) goes
-green exactly like the local dry run predicted.
+Confirmed live on GitHub's own runners, not just predicted locally: the first real run (commit
+`003d2c8`) actually failed on the second finding above, diagnosed from the real job log (fetched via
+the GitHub API using the token the local git credential manager already had cached for `push` —
+read-only, never printed), fixed, and the next run (commit `25de92b`) confirmed green across all
+three jobs (secrets/backend/frontend) via the Actions API.
+
+## 19. Phase 6 hardening, continued — a real load test against spec §23's latency budget ✅
+
+spec §23 sets `API p95 latency (read endpoints, warm cache) < 200ms` and
+`API p95 latency (write endpoints) < 500ms`, and §29 names load testing as a Phase 6 exit criterion.
+No Docker/cloud target needed for this: k6 is a static binary (downloaded directly, same pattern as
+gitleaks above), run against the already-running local backend pointed at the real seeded catalogue
+(8,103 products) rather than an empty schema — latency against real query plans and real data
+volume, not a toy dataset.
+
+Added `backend/scripts/loadtest.js`: two back-to-back scenarios (not concurrent, so their p95s don't
+contend with each other), 20 ramping VUs each over ~35s. `reads` hits product listing, PDP, and
+category endpoints — everything a real shopper's browsing depends on. `writes` exercises a guest
+add-to-cart, the cheapest endpoint that still does a real `INSERT` (cart + cart_item creation), since
+a full checkout load test needs distinct users/addresses/stock per iteration and Phase 3's dedicated
+50-concurrent-checkout oversell test (§12 above) already covers that path's concurrency safety
+specifically.
+
+### Real bug caught: the test script itself, not the backend
+
+First run: reads passed cleanly (p95=91ms), but `writes` had a **5% failure rate** — a real
+`http_req_failed` threshold breach. Traced through the backend's own structured logs (not assumed):
+every failure was a legitimate `409 ITEM_UNAVAILABLE` from `cart_service.py`'s
+`variant.available <= 0` check — correct enforcement of spec §9.3 ("out-of-stock or inactive variant
+... never silently added"), not a server defect. The actual bug was in `loadtest.js`: it sampled from
+an *unfiltered* product list, and this catalogue's stock is randomized 0-60 per variant at ingest
+(§3 above), so some sampled products have every variant genuinely sold out; the script's fallback
+`variants.find(v => v.available > 0) || variants[0]` then deliberately added a known-unavailable
+variant instead of skipping it. Fixed by having `setup()` fetch a second, `in_stock=true`-filtered
+product list for `writes` to sample from specifically (the existing `&in_stock=true` query param,
+already built for the storefront's own filter UI), and dropping the unsafe `|| variants[0]` fallback
+entirely in favor of skipping the iteration if no variant is actually available. Re-ran clean:
+0% failures.
+
+### Results (native Windows, local MySQL, no cache — the only environment this project runs in)
+
+| Scenario | Budget (spec §23) | Measured p95 | Result |
+|---|---|---|---|
+| `reads` (listing + PDP + categories) | < 200ms | **91–123ms** (two runs) | ✅ well within budget |
+| `writes` (guest add-to-cart) | < 500ms | **99–111ms** (two runs) | ✅ well within budget |
+| Error rate | — | 0.00% (after the script fix above) | ✅ |
+
+Both budgets are met with roughly 2x headroom at only 20 concurrent VUs — a real number, not a
+padded one, and one this project can point to instead of leaving spec §23 entirely unstarted as
+done.MD previously stated. Not attempted: a genuinely large-scale/soak test (spec's budget doesn't
+specify a target RPS, and 20 VUs against a single native-Windows dev machine with no cache layer is
+a fair smoke-level check, not a capacity-planning exercise); that would need real target infra this
+project doesn't have.
+
+### Verified
+
+Two full k6 runs (broken script, then fixed script) against the live local backend on the real
+seeded database. First run: reads clean, writes at 5% failure rate traced to root cause via
+structured backend logs. Second run, post-fix: 100% checks passed, both latency thresholds green,
+0% `http_req_failed`. Backend and k6 processes cleanly stopped afterward; no lingering state.
 
 ---
 

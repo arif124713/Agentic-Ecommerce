@@ -1,0 +1,7 @@
+# Verified false positives only — each entry must be investigated and justified below, not just
+# silenced. Fingerprint format: <commit>:<file>:<rule>:<line> (from `gitleaks detect -v --redact`).
+
+# "test-idem-key-12345" is a literal placeholder idempotency key used to test that a duplicate
+# checkout request returns the same order — not a real secret, high-entropy heuristic false
+# positive.
+0185955d5363eadd5f9f34e43d39088d828bc132:backend/tests/test_order_lifecycle.py:generic-api-key:85

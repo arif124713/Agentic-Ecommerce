@@ -1859,6 +1859,63 @@ high).
 production `vite build` succeeds, full browser click-through of guest/auth/cart/checkout/admin
 routes with no console errors.
 
+### Postscript: this push was the first real GitHub Actions run, and it failed — for an unrelated reason
+
+The push above triggered the very first *actual* execution of `.github/workflows/ci.yml` on GitHub's
+own runners (per §15, the repo had never had a remote until this session; every prior "CI green"
+claim was a local simulation of the same commands, not a real Actions run). It failed — but not from
+anything in this section. `backend/app/core/storage.py` and `core/image_pipeline.py` (§16, the
+Phase 1 image-pipeline gap closure) had been written and verified live in an earlier session but
+were never `git add`ed — they'd sat as untracked files the whole time, invisible to every "the repo
+is clean" assumption made since. `main.py` imports from `storage.py`, so a fresh CI checkout doesn't
+have the module at all: `pytest` died at collection with
+`ModuleNotFoundError: No module named 'app.core.storage'`.
+
+Diagnosed by fetching the real job log via the GitHub API (log downloads need repo-admin auth; used
+the token already cached by the local git credential manager for push, read-only, never printed).
+Fixed by finally committing those files plus the rest of the coherent-but-uncommitted §16 change set
+(`.gitignore`, `README.md`, `config.py`, `security_headers.py`, `schemas/catalog.py`,
+`ingest_flipkart.py`, `ProductPage.tsx`, `types/catalog.ts` — all reviewed diff-by-diff first, all
+matching §16's own writeup, nothing unexpected). Re-pushed; the next Actions run (commit `6d76722`)
+was confirmed green end-to-end via the API. Worth recording as its own lesson: `git status` showing
+untracked files is easy to mentally file under "later" indefinitely — it took an actual clean-room
+CI run, not just local test-passing, to surface that the app didn't fully exist outside this one
+machine.
+
+## 18. Phase 6 hardening, continued — CI dependency/secret scanning (spec §22, §25) ✅
+
+Picked up immediately after fixing the CI break above, since dependency- and secret-scanning gates
+were both named gaps in done.MD's own "Known gaps" list and are a direct, CI-native continuation of
+§17's manual audit work — every future push now gets checked automatically instead of relying on
+someone remembering to run `pip-audit`/`npm audit` by hand.
+
+- **`pip-audit`** added as a backend CI step (installed fresh, run against `requirements.txt`) —
+  fails the build on any known vulnerability, closing spec §2.3's "0 high/critical vulnerabilities"
+  success criterion at the CI level, not just as a one-off manual check.
+- **`npm audit --audit-level=high`** added as a frontend CI step, same reasoning.
+- **`gitleaks`** added as a new standalone CI job (`gitleaks/gitleaks-action@v2`, full-history scan
+  via `fetch-depth: 0`) — spec §22's secret-scanning gate, previously entirely absent.
+
+**Real finding, caught by actually running gitleaks locally before trusting it** (downloaded the
+plain static binary — no Docker needed — rather than assuming the Action would just work): a
+full-history scan immediately flagged `backend/tests/test_order_lifecycle.py:85`,
+`key = "test-idem-key-12345"`, as a `generic-api-key` match in the very first commit. It's a literal
+placeholder idempotency key for a duplicate-checkout test, not a real secret — but it's real
+committed history, so simply re-running gitleaks in CI going forward would have failed on this one
+pre-existing entropy false positive forever. Fixed properly rather than disabling the gate or
+rewriting history: added a `.gitleaksignore` baseline listing the exact fingerprint
+(`commit:file:rule:line`) with a one-line justification, re-ran the same local binary against the
+same history, confirmed `no leaks found`. This is the correct shape for handling a scanner false
+positive — a documented, auditable exception tied to a specific finding, not a blanket disable.
+
+### Verified
+
+Local gitleaks binary (v8.30.1, downloaded directly, no Docker) run against the actual repo history
+twice: once bare (1 finding, confirmed as a test-only placeholder, not a live secret), once with
+`.gitleaksignore` in place (`no leaks found`). `ci.yml` YAML syntax validated with `yaml.safe_load`.
+Pushed; next step is confirming the live Actions run (three jobs now: secrets/backend/frontend) goes
+green exactly like the local dry run predicted.
+
 ---
 
 ## Stack deviations from spec §5 (and why)

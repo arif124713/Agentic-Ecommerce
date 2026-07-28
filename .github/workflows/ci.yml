@@ -12,6 +12,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  secrets:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: gitleaks (spec §22 — secret-scanning gate)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   backend:
     name: Backend (ruff · mypy · pytest+coverage · alembic)
     runs-on: ubuntu-latest
@@ -72,6 +85,11 @@ jobs:
           echo "MySQL never became ready" >&2
           exit 1
 
+      - name: pip-audit (spec §22/§25 — dependency vulnerability gate, 0 high/critical per §2.3)
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.txt
+
       - name: Pytest (spec §24 — the suite manages its own blackcart_test database)
         run: pytest tests/ -q --cov=app --cov-report=term-missing
 
@@ -102,6 +120,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: npm audit (spec §22/§25 — dependency vulnerability gate, 0 high/critical per §2.3)
+        run: npm audit --audit-level=high
 
       - name: Type check
         run: npx tsc -b

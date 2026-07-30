@@ -5,10 +5,15 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 from ulid import ULID
 
+from app.core import mfa
 from app.core.config import get_settings
 from app.core.errors import (
     AccountLockedError,
     EmailAlreadyRegisteredError,
+    MfaAlreadyEnabledError,
+    MfaInvalidCodeError,
+    MfaNotEnabledError,
+    MfaRequiredError,
     NotFoundError,
     UnauthorizedError,
     ValidationAppError,
@@ -24,14 +29,24 @@ from app.core.security import (
     password_policy_errors,
     verify_password,
 )
-from app.models.auth import EmailVerificationToken, PasswordResetToken, RefreshToken, User
+from app.models.auth import EmailVerificationToken, MfaChallengeToken, PasswordResetToken, RefreshToken, User
 from app.repositories.auth import (
     LoginAttemptRepository,
     OneTimeTokenRepository,
     RefreshTokenRepository,
     UserRepository,
 )
-from app.schemas.auth import LoginIn, RegisterIn, SessionOut, UserOut
+from app.schemas.auth import (
+    LoginIn,
+    MfaDisableIn,
+    MfaEnableIn,
+    MfaEnableOut,
+    MfaLoginVerifyIn,
+    MfaSetupOut,
+    RegisterIn,
+    SessionOut,
+    UserOut,
+)
 
 logger = structlog.get_logger("blackcart.auth")
 settings = get_settings()
@@ -66,6 +81,7 @@ class AuthService:
         self.refresh_tokens = RefreshTokenRepository(session)
         self.email_tokens = OneTimeTokenRepository(session, EmailVerificationToken)
         self.reset_tokens = OneTimeTokenRepository(session, PasswordResetToken)
+        self.mfa_tokens = OneTimeTokenRepository(session, MfaChallengeToken)
         self.login_attempts = LoginAttemptRepository(session)
 
     # -- registration & verification -------------------------------------------------
@@ -211,8 +227,40 @@ class AuthService:
         user.last_login_at = datetime.datetime.now(datetime.UTC)
         user.last_login_ip = ip
 
+        if user.mfa_enabled:
+            raw_challenge = generate_opaque_token()
+            record = self.mfa_tokens.create(
+                user_id=user.id,
+                token_hash=hash_token(raw_challenge),
+                ttl_seconds=settings.mfa_challenge_ttl_seconds,
+            )
+            record.remember = payload.remember_me
+            await self.session.commit()
+            raise MfaRequiredError(headers={"X-MFA-Challenge": raw_challenge})
+
         tokens = await self._issue_session(
             user, ip=ip, user_agent_hash=user_agent_hash, remember_me=payload.remember_me
+        )
+        await self.session.commit()
+        return user, to_user_out(user, tokens.roles, tokens.permissions), tokens
+
+    async def complete_mfa_login(
+        self, payload: MfaLoginVerifyIn, *, ip: str | None, user_agent_hash: str | None
+    ) -> tuple[User, UserOut, SessionTokens]:
+        challenge = await self.mfa_tokens.get_valid(hash_token(payload.challenge_token))
+        if challenge is None:
+            raise UnauthorizedError("This sign-in attempt has expired. Please sign in again.")
+
+        user = await self.users.get_by_id(challenge.user_id)
+        if user is None or user.status != "active" or not user.mfa_enabled:
+            raise UnauthorizedError("This sign-in attempt is no longer valid.")
+
+        if not self._verify_mfa_factor(user, code=payload.code, recovery_code=payload.recovery_code):
+            raise MfaInvalidCodeError()
+
+        challenge.used_at = datetime.datetime.now(datetime.UTC)
+        tokens = await self._issue_session(
+            user, ip=ip, user_agent_hash=user_agent_hash, remember_me=challenge.remember
         )
         await self.session.commit()
         return user, to_user_out(user, tokens.roles, tokens.permissions), tokens
@@ -316,6 +364,61 @@ class AuthService:
 
         # Spec §10.8: password/reset "revokes all sessions" unconditionally.
         await self.refresh_tokens.revoke_all_for_user(user.id, reason="password_reset")
+        await self.session.commit()
+
+    # -- MFA (TOTP) ------------------------------------------------------------------------
+
+    def _verify_mfa_factor(self, user: User, *, code: str | None, recovery_code: str | None) -> bool:
+        if code:
+            secret = mfa.decrypt_secret(user.mfa_secret)
+            return mfa.verify_code(secret, code)
+
+        # Recovery codes are single-use: a match consumes it from the stored (hashed) list.
+        code_hash = hash_token(recovery_code.strip().lower())
+        codes = list(user.mfa_recovery_codes or [])
+        if code_hash not in codes:
+            return False
+        codes.remove(code_hash)
+        user.mfa_recovery_codes = codes
+        return True
+
+    async def mfa_setup(self, user: User) -> MfaSetupOut:
+        """Generates and stores a new (unconfirmed) secret; mfa_enabled stays False until the
+        caller proves possession via mfa_enable. Calling this again before enabling just
+        replaces the pending secret, so an abandoned setup can't lock a user out of retrying."""
+        secret = mfa.generate_secret()
+        user.mfa_secret = mfa.encrypt_secret(secret)
+        await self.session.commit()
+        uri = mfa.provisioning_uri(secret, email=user.email)
+        return MfaSetupOut(secret=secret, otpauth_uri=uri, qr_data_uri=mfa.qr_data_uri(uri))
+
+    async def mfa_enable(self, user: User, payload: MfaEnableIn) -> MfaEnableOut:
+        if user.mfa_enabled:
+            raise MfaAlreadyEnabledError()
+        if not user.mfa_secret:
+            raise ValidationAppError("Call /mfa/setup before enabling MFA.")
+
+        secret = mfa.decrypt_secret(user.mfa_secret)
+        if not mfa.verify_code(secret, payload.code):
+            raise MfaInvalidCodeError()
+
+        raw_codes = mfa.generate_recovery_codes()
+        user.mfa_recovery_codes = [hash_token(c) for c in raw_codes]
+        user.mfa_enabled = True
+        await self.session.commit()
+        return MfaEnableOut(recovery_codes=raw_codes)
+
+    async def mfa_disable(self, user: User, payload: MfaDisableIn) -> None:
+        if not user.mfa_enabled:
+            raise MfaNotEnabledError()
+        if not verify_password(payload.password, user.password_hash):
+            raise UnauthorizedError("Incorrect password.")
+        if not self._verify_mfa_factor(user, code=payload.code, recovery_code=None):
+            raise MfaInvalidCodeError()
+
+        user.mfa_enabled = False
+        user.mfa_secret = None
+        user.mfa_recovery_codes = None
         await self.session.commit()
 
     # -- current user / sessions ---------------------------------------------------------

@@ -104,6 +104,28 @@ class AccountLockedError(AppError):
     message = "This account is temporarily locked due to repeated failed sign-in attempts."
 
 
+class MfaRequiredError(AppError):
+    code = "MFA_REQUIRED"
+    status_code = status.HTTP_401_UNAUTHORIZED
+    message = "A second factor is required to complete sign-in."
+
+
+class MfaInvalidCodeError(AppError):
+    code = "MFA_INVALID_CODE"
+    status_code = status.HTTP_401_UNAUTHORIZED
+    message = "That code is incorrect or has expired."
+
+
+class MfaAlreadyEnabledError(ConflictError):
+    code = "MFA_ALREADY_ENABLED"
+    message = "MFA is already enabled on this account."
+
+
+class MfaNotEnabledError(ConflictError):
+    code = "MFA_NOT_ENABLED"
+    message = "MFA is not enabled on this account."
+
+
 class DependencyUnavailableError(AppError):
     code = "DEPENDENCY_UNAVAILABLE"
     status_code = status.HTTP_503_SERVICE_UNAVAILABLE

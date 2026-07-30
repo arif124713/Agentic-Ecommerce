@@ -1,8 +1,10 @@
 from app.db.base import Base
 from app.models.audit import AuditLog
 from app.models.auth import (
+    ApiKey,
     EmailVerificationToken,
     LoginAttempt,
+    MfaChallengeToken,
     PasswordResetToken,
     Permission,
     RefreshToken,
@@ -65,7 +67,9 @@ __all__ = [
     "RefreshToken",
     "EmailVerificationToken",
     "PasswordResetToken",
+    "MfaChallengeToken",
     "LoginAttempt",
+    "ApiKey",
     "Address",
     "Cart",
     "CartItem",

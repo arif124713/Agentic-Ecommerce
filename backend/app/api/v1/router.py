@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api.v1.account import addresses
 from app.api.v1.account import support as account_support
+from app.api.v1.admin import api_keys as admin_api_keys
 from app.api.v1.admin import audit as admin_audit
 from app.api.v1.admin import catalog as admin_catalog
 from app.api.v1.admin import cms as admin_cms
@@ -44,3 +45,4 @@ api_router.include_router(admin_cms.router)
 api_router.include_router(admin_support.router)
 api_router.include_router(admin_audit.router)
 api_router.include_router(admin_feature_flags.router)
+api_router.include_router(admin_api_keys.router)

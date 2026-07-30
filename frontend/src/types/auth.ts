@@ -31,3 +31,13 @@ export interface Session {
   created_at: string
   last_used_at: string | null
 }
+
+export interface MfaSetup {
+  secret: string
+  otpauth_uri: string
+  qr_data_uri: string
+}
+
+export interface MfaEnableResult {
+  recovery_codes: string[]
+}

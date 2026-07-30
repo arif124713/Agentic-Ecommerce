@@ -14,6 +14,7 @@ const NAV_ITEMS = [
   { label: 'Support', to: '/admin/support' },
   { label: 'Audit Logs', to: '/admin/audit-logs' },
   { label: 'Feature Flags', to: '/admin/feature-flags' },
+  { label: 'API Keys', to: '/admin/api-keys' },
 ]
 
 export function AdminLayout() {

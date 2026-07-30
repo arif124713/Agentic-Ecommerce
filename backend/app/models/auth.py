@@ -2,6 +2,7 @@ import datetime
 
 from sqlalchemy import (
     CHAR,
+    JSON,
     Boolean,
     Column,
     DateTime,
@@ -30,6 +31,12 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     password_changed_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # spec §8.3: "Encrypted at rest" / "Hashed" respectively. mfa_secret must be *reversible*
+    # (TOTP verification needs the raw secret back, unlike a password) so it's Fernet-encrypted
+    # with a key derived from APP_SECRET_KEY (see core/mfa.py) rather than hashed like everything
+    # else in this table. Recovery codes are one-time-use, so those genuinely are one-way hashed.
+    mfa_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mfa_recovery_codes: Mapped[list | None] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)
     failed_login_count: Mapped[int] = mapped_column(SmallInteger, default=0, nullable=False)
     locked_until: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -143,6 +150,25 @@ class PasswordResetToken(Base):
     __table_args__ = (Index("ix_password_reset_user", "user_id"),)
 
 
+class MfaChallengeToken(Base):
+    """A short-lived, single-use token identifying a login that's passed its password check but
+    is waiting on a second factor (spec §10.8's MFA_REQUIRED flow). Same create/consume shape as
+    email-verification/password-reset tokens, so it reuses the same generic
+    `OneTimeTokenRepository` rather than a bespoke one — see done.MD's note on that repository."""
+
+    __tablename__ = "mfa_challenge_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    token_hash: Mapped[str] = mapped_column(CHAR(64), unique=True, nullable=False)
+    remember: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    expires_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (Index("ix_mfa_challenge_user", "user_id"),)
+
+
 class LoginAttempt(Base):
     __tablename__ = "login_attempts"
 
@@ -154,3 +180,27 @@ class LoginAttempt(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (Index("ix_login_attempts_email_ip_created", "email_hash", "ip", "created_at"),)
+
+
+class ApiKey(Base):
+    """Machine access to admin endpoints (spec §11.5): displayed once at creation, stored as
+    argon2(key + pepper) rather than sha256 like the opaque tokens above, since spec calls this
+    out specifically (a leaked API key is a standing credential, not a short-lived session token,
+    so it gets the same slow-hash treatment as a password)."""
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    public_id: Mapped[str] = mapped_column(CHAR(26), unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    key_hash: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    key_prefix: Mapped[str] = mapped_column(String(16), nullable=False)
+    scopes: Mapped[list] = mapped_column(JSON, nullable=False)
+    ip_allowlist: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    expires_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (Index("ix_api_keys_created_by", "created_by_user_id"),)

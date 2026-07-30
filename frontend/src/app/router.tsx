@@ -38,6 +38,7 @@ import { SupportQueuePage } from '@/pages/admin/SupportQueuePage'
 import { AdminTicketDetailPage } from '@/pages/admin/AdminTicketDetailPage'
 import { AuditLogsPage } from '@/pages/admin/AuditLogsPage'
 import { FeatureFlagsPage } from '@/pages/admin/FeatureFlagsPage'
+import { ApiKeysPage } from '@/pages/admin/ApiKeysPage'
 
 export const router = createBrowserRouter([
   {
@@ -147,6 +148,7 @@ export const router = createBrowserRouter([
       { path: 'support/:publicId', element: <AdminTicketDetailPage /> },
       { path: 'audit-logs', element: <AuditLogsPage /> },
       { path: 'feature-flags', element: <FeatureFlagsPage /> },
+      { path: 'api-keys', element: <ApiKeysPage /> },
     ],
   },
 ])

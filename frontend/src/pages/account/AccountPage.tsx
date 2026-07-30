@@ -1,9 +1,170 @@
+import { useState } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import toast from 'react-hot-toast'
 import { cn } from '@/lib/cn'
 import { Button } from '@/components/ui/Button'
+import { Input } from '@/components/ui/Input'
+import { FormAlert } from '@/components/ui/FormAlert'
 import { useCurrentUser } from '@/hooks/useAuth'
-import { listSessions, logout, logoutAll, revokeSession } from '@/services/auth'
+import {
+  listSessions,
+  logout,
+  logoutAll,
+  mfaDisable,
+  mfaEnable,
+  mfaSetup,
+  revokeSession,
+} from '@/services/auth'
+import { getApiErrorMessage } from '@/services/apiClient'
+import type { MfaSetup } from '@/types/auth'
+
+function MfaSection({ mfaEnabled }: { mfaEnabled: boolean }) {
+  const queryClient = useQueryClient()
+  const [setup, setSetup] = useState<MfaSetup | null>(null)
+  const [code, setCode] = useState('')
+  const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null)
+  const [showDisable, setShowDisable] = useState(false)
+  const [disablePassword, setDisablePassword] = useState('')
+  const [disableCode, setDisableCode] = useState('')
+
+  const setupMutation = useMutation({
+    mutationFn: mfaSetup,
+    onSuccess: (data) => setSetup(data),
+    onError: (error) => toast.error(getApiErrorMessage(error)),
+  })
+
+  const enableMutation = useMutation({
+    mutationFn: () => mfaEnable(code.trim()),
+    onSuccess: (result) => {
+      setRecoveryCodes(result.recovery_codes)
+      setSetup(null)
+      setCode('')
+      queryClient.invalidateQueries({ queryKey: ['auth', 'me'] })
+    },
+  })
+
+  const disableMutation = useMutation({
+    mutationFn: () => mfaDisable(disablePassword, disableCode),
+    onSuccess: () => {
+      toast.success('Two-factor authentication disabled.')
+      setShowDisable(false)
+      setDisablePassword('')
+      setDisableCode('')
+      queryClient.invalidateQueries({ queryKey: ['auth', 'me'] })
+    },
+  })
+
+  if (recoveryCodes) {
+    return (
+      <section className="rounded-(--radius-lg) border border-border p-6">
+        <h2 className="text-xs font-medium uppercase tracking-wide text-text-tertiary">Two-factor authentication</h2>
+        <div className="mt-4">
+          <FormAlert tone="success">
+            Two-factor authentication is now enabled. Save these recovery codes somewhere safe — each one can be
+            used once if you lose access to your authenticator app, and they won&apos;t be shown again.
+          </FormAlert>
+        </div>
+        <ul className="mt-4 grid grid-cols-2 gap-2 font-mono text-sm">
+          {recoveryCodes.map((rc) => (
+            <li key={rc} className="rounded-(--radius-md) bg-surface-raised px-3 py-2">
+              {rc}
+            </li>
+          ))}
+        </ul>
+        <Button className="mt-4" size="sm" onClick={() => setRecoveryCodes(null)}>
+          Done
+        </Button>
+      </section>
+    )
+  }
+
+  return (
+    <section className="rounded-(--radius-lg) border border-border p-6">
+      <h2 className="text-xs font-medium uppercase tracking-wide text-text-tertiary">Two-factor authentication</h2>
+
+      {mfaEnabled ? (
+        <div className="mt-4">
+          <p className="text-sm text-text-secondary">Two-factor authentication is enabled on your account.</p>
+          {!showDisable ? (
+            <Button variant="destructive" size="sm" className="mt-3" onClick={() => setShowDisable(true)}>
+              Disable
+            </Button>
+          ) : (
+            <form
+              className="mt-4 flex max-w-sm flex-col gap-3"
+              onSubmit={(e) => {
+                e.preventDefault()
+                disableMutation.mutate()
+              }}
+            >
+              {disableMutation.isError ? <FormAlert>{getApiErrorMessage(disableMutation.error)}</FormAlert> : null}
+              <Input
+                label="Password"
+                type="password"
+                autoComplete="current-password"
+                required
+                value={disablePassword}
+                onChange={(e) => setDisablePassword(e.target.value)}
+              />
+              <Input
+                label="Authenticator code"
+                required
+                value={disableCode}
+                onChange={(e) => setDisableCode(e.target.value)}
+              />
+              <div className="flex gap-2">
+                <Button type="submit" variant="destructive" size="sm" loading={disableMutation.isPending}>
+                  Confirm disable
+                </Button>
+                <Button type="button" variant="ghost" size="sm" onClick={() => setShowDisable(false)}>
+                  Cancel
+                </Button>
+              </div>
+            </form>
+          )}
+        </div>
+      ) : setup ? (
+        <form
+          className="mt-4 flex max-w-sm flex-col gap-4"
+          onSubmit={(e) => {
+            e.preventDefault()
+            enableMutation.mutate()
+          }}
+        >
+          {enableMutation.isError ? <FormAlert>{getApiErrorMessage(enableMutation.error)}</FormAlert> : null}
+          <p className="text-sm text-text-secondary">
+            Scan this QR code with your authenticator app, then enter the 6-digit code it shows.
+          </p>
+          <img
+            src={setup.qr_data_uri}
+            alt="Two-factor authentication QR code"
+            className="h-40 w-40 self-start rounded-(--radius-md) border border-border"
+          />
+          <p className="text-xs text-text-tertiary">
+            Or enter this key manually: <span className="font-mono">{setup.secret}</span>
+          </p>
+          <Input label="6-digit code" required value={code} onChange={(e) => setCode(e.target.value)} />
+          <div className="flex gap-2">
+            <Button type="submit" size="sm" loading={enableMutation.isPending}>
+              Confirm and enable
+            </Button>
+            <Button type="button" variant="ghost" size="sm" onClick={() => setSetup(null)}>
+              Cancel
+            </Button>
+          </div>
+        </form>
+      ) : (
+        <div className="mt-4">
+          <p className="text-sm text-text-secondary">Add an extra layer of security using an authenticator app.</p>
+          <Button size="sm" className="mt-3" onClick={() => setupMutation.mutate()} loading={setupMutation.isPending}>
+            Enable two-factor authentication
+          </Button>
+        </div>
+      )}
+    </section>
+  )
+}
 
 const NAV_ITEMS = [
   { label: 'Profile', href: null },
@@ -91,6 +252,8 @@ export function AccountPage() {
               </p>
             </div>
           </section>
+
+          <MfaSection mfaEnabled={user.mfa_enabled} />
 
           <section className="rounded-(--radius-lg) border border-border p-6">
             <div className="flex items-center justify-between gap-4">

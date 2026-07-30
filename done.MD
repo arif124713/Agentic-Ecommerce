@@ -46,9 +46,12 @@ same product/order/user/coupon/CMS/support write paths already built in prior se
 flags (spec §28) have a working admin CRUD UI, both verified live in the browser with real before/
 after diffs and the correct admin-vs-super-admin permission split (§23). Bulk product CSV import/
 export and bulk actions — the last remaining named Phase 4 admin item — are now built end-to-end
-too, with per-row validation errors on import verified live via a real file upload (§24). Running
-**natively on Windows** — no Docker/Redis/Celery/Elasticsearch (see §5/§6 below for why and what
-that changes).
+too, with per-row validation errors on import verified live via a real file upload (§24). MFA (TOTP)
+and admin API keys — spec §10.8/§11.5, previously entirely unbuilt — are now **end-to-end
+functional** too: real second-factor login gating, recovery codes, and scoped/peppered API-key
+authentication, verified live through the browser and against the running dev backend, catching a
+real pre-existing bug where logout never actually cleared cookies (§25). Running **natively on
+Windows** — no Docker/Redis/Celery/Elasticsearch (see §5/§6 below for why and what that changes).
 
 ---
 
@@ -64,7 +67,7 @@ that changes).
 | 8 | Database design | 🟡 | Catalogue (§8.3) + auth/identity + commerce tables (carts, addresses, orders, payments, shipments, coupons — §9) + admin tables (`inventory_movements`, `refunds` — §10 below) + `reviews` (§14 below) built; CMS/support tables not created |
 | 9 | Domain model & business rules | 🟡 | Pricing, cart, inventory (row-locked, now with an append-only movement ledger — §10 below), order state machine, coupon validation chain, review eligibility/moderation rules (§9.7 — §14 below) all implemented; shipping is flat-rate not zone-based |
 | 10 | API design | 🟡 | Conventions followed (envelope, error codes, pagination shape) for catalogue + auth + cart/checkout/orders + admin endpoints |
-| 11 | Authentication & session management | ✅ | Backend built end-to-end against spec's `/api/v1/auth/*` contract (§10.8) — see §8 below. MFA endpoints and admin API keys not built |
+| 11 | Authentication & session management | ✅ | Backend built end-to-end against spec's `/api/v1/auth/*` contract (§10.8) — see §8 below. MFA (TOTP, recovery codes, login-time gating) and admin API keys (scoped, peppered, IP-allowlistable) now built too — see §25 |
 | 12 | Simulated payment gateway | 🟡 | Deterministic test cards + COD implemented synchronously (§9 below); wallet OTP methods (bKash/Nagad/Rocket/UPI), 3DS challenge step, and async webhook/Celery retry chain not built |
 | 13 | Order fulfilment & delivery simulation | 🟡 | Full T+0..T+34h shipment timeline simulated and lazily reconciled against wall-clock time (§9 below); admin can now manually transition/refund orders (§10 below), but there's no ops queue/pick-list UI (§13.3) |
 | 14 | Search & discovery | 🟡 | Real relevance-ranked search, autocomplete, zero-result fallback, recommendation rails, wishlist, recently-viewed, back-in-stock alerts, newsletter all built against a MySQL backend instead of Elasticsearch — full details in §11 below |
@@ -555,8 +558,8 @@ mattered, since curl testing happened before the CSRF interceptor existed).
 
 ### Known gaps / new since this session
 
-- **MFA and admin API keys** (spec §10.8's `/mfa/*` endpoints, §11.5): not built — no frontend pages
-  call them yet either, so scope matched what's actually usable.
+- **MFA and admin API keys** (spec §10.8's `/mfa/*` endpoints, §11.5): now built end-to-end,
+  including frontend pages — see §25.
 - **`perm_ver` cache-busting** (spec §3.2's Redis-cached permission version): skipped, no Redis.
   Permissions are re-resolved by a fresh join query on every `/me`/login/refresh instead — correct
   today at this scale, would need revisiting under real load.
@@ -2318,6 +2321,104 @@ with the import's row showing the complete real snapshot (`mrp`, `price`, `title
 
 ---
 
+## 25. MFA (TOTP) and admin API keys (spec §10.8's `/mfa/*`, §11.5) ✅
+
+Closes two of the four remaining "never built at all" items named at the start of this session
+(Elasticsearch and Redis/Celery/an actual deployment target are still open — see below). Both are
+pure-code additions requiring no new infrastructure, unlike the other two.
+
+### MFA (TOTP)
+
+`core/mfa.py` — TOTP secret generation (`pyotp`), Fernet-encrypted-at-rest storage (key derived
+from `APP_SECRET_KEY` via SHA-256, so no separate KMS/secret store), QR code rendering as a data
+URI (`qrcode`, so the frontend needs no client-side QR library), and recovery-code generation.
+`mfa_secret`/`mfa_recovery_codes` (deferred from §8 above, now added to `User` via migration
+`67e8283370b3`) store the secret encrypted (reversible — TOTP verification needs it back, unlike a
+password) and the recovery codes one-way hashed (`hash_token`, same sha256 already used for
+refresh/reset tokens) since those are genuinely single-use.
+
+Login gating: `AuthService.login()` now checks `user.mfa_enabled` after the password check
+succeeds — if set, it issues a short-lived, single-use `MfaChallengeToken` (new model, reusing the
+existing generic `OneTimeTokenRepository` rather than a bespoke class — identical create/consume
+shape to email-verification/password-reset tokens) and raises `MfaRequiredError` (401,
+`MFA_REQUIRED`, spec's own error code) with the raw challenge token in an `X-MFA-Challenge`
+response header rather than the JSON body, so the existing error-envelope shape didn't need a new
+field. `POST /auth/mfa/login-verify` (rate-limited 10/5min against TOTP brute-forcing) consumes
+that challenge with either a 6-digit code or a recovery code and issues a real session via the same
+`_issue_session` helper `login`/`refresh` already share — added a `remember` column to
+`MfaChallengeToken` (migration `93c359557201`) so the original login's "remember me" choice
+survives the two-step flow instead of being silently dropped.
+`POST /auth/mfa/setup`/`/enable`/`/disable` round out the account-settings side (spec's own
+three-endpoint shape); `disable` requires both password and a code, per spec.
+
+### Admin API keys
+
+`core/api_keys.py` + new `ApiKey` model (migration `be87372a85fd`): argon2(key + pepper) at rest —
+spec §11.5 calls this out specifically as a slower/peppered hash, distinct from the sha256 used for
+session tokens, since a leaked API key is a standing credential, not a short-lived session token.
+New `ADMIN_API_KEY_PEPPER` setting (same "must be changed in production" fail-fast pattern as
+`APP_SECRET_KEY`). `require(*permissions)` (`api/deps.py`) now checks for an `X-API-Key` header
+before falling back to the cookie/JWT path — candidates are narrowed by the key's stored
+(near-unique) prefix, confirmed with a real argon2 verify, checked against `revoked_at`/
+`expires_at`/an optional IP allowlist (stdlib `ipaddress`, supports CIDR), and finally checked that
+the *key's own scopes* (not the creating admin's full permission set) are a superset of what the
+endpoint requires. `iam:*`/`system:*` scopes are rejected at creation time (spec: "keys never grant
+iam:*/system:* permissions") via a new `system:api_key:manage` permission, granted to `super_admin`
+only — the same strictness level as `system:feature_flag:write` (§23).
+
+### A real bug found — pre-existing, unrelated to this session's own code
+
+Writing an MFA test that checked `/auth/me` returns 401 immediately after `/auth/logout` surfaced a
+genuine, previously-undetected bug in `/auth/logout` and `/auth/logout-all`: both call
+`clear_auth_cookies(response)` on the FastAPI-injected `response` parameter, then explicitly
+`return Response(status_code=204)` — a *different* Response object, which Starlette sends as-is,
+silently discarding every cookie-deletion header set on the first one. Logout returned `204` and
+*looked* like it worked, but the browser never actually received the `Set-Cookie: access_token=;
+Max-Age=0` headers — the access-token cookie (and refresh/CSRF) stayed live in the client's cookie
+jar for its full remaining lifetime after a "successful" logout. Fixed by mutating and returning the
+same injected `response` object instead of constructing a new one. Existing logout tests
+(`test_auth_security.py`) only checked the status code, not actual cookie clearance, so this had
+been silently broken since §8; confirmed the fix with a fresh isolated check (register → login →
+logout → inspect `Set-Cookie` headers directly) before trusting the full suite.
+
+### Two migration-authoring bugs caught before ever touching the database
+
+1. **Stray duplicate `__table_args__`** on the new `MfaChallengeToken` model — a leftover line from
+   an earlier edit meant the class actually had *two* `__table_args__` assignments; Python just
+   keeps the second, so the model's real active index name was silently `ix_password_reset_user`
+   (copied from the class above) instead of the intended `ix_mfa_challenge_user`. `alembic check`
+   caught it as phantom drift (wanting to rename an index across two unrelated tables) even after an
+   initial hand-fix of the *migration file* — the bug was in the *model*, not the migration, so
+   fixing the migration alone couldn't have closed the gap.
+2. **`PasswordResetToken` was missing its own index declaration** — a genuine, pre-existing gap
+   (the real DB has had `ix_password_reset_user` since the very first auth migration in §8, but the
+   SQLAlchemy model never declared it) that had been silently masked until bug #1 above was fixed,
+   at which point `alembic check` started reporting it as drift. Added the missing
+   `Index("ix_password_reset_user", "user_id")` to the model to match reality. Full
+   `upgrade → downgrade → upgrade → check` cycle verified clean on both new migrations afterward.
+
+### Verified
+
+**Backend**: 15 new pytest cases — `test_mfa.py` (6: setup→enable round-trip with a real
+`pyotp`-generated code, wrong-code rejection, the full login-time MFA_REQUIRED→challenge→verify
+loop, wrong-code-at-verify rejection, recovery-code consumption *and* its one-time-use enforcement,
+disable requiring both correct password and code) and `test_api_keys.py` (9: permission gating on
+key management itself, create/list/revoke round-trip, restricted-scope and unknown-scope rejection,
+scoped access working with zero session cookies, missing-scope 403, revoked-key 401, IP-allowlist
+403, wrong-key-value 401). Full suite: 84 → **99 passed**.
+
+**Live in Chrome, not just pytest**: registered a real account, enabled MFA through the actual
+account-settings UI (scanned QR secret, computed a real TOTP code externally to confirm the QR
+encodes a genuinely working secret, not just a plausible-looking one), got 10 recovery codes,
+signed out, signed back in — hit the real `MFA_REQUIRED` second-factor screen, verified with a
+freshly-computed TOTP code, landed back on `/account` with a real session. Disabled MFA with
+password + code. Separately promoted the same account to `super_admin`, created a real admin API
+key scoped to `catalog:product:write` through `/admin/api-keys`, confirmed it actually authenticated
+a live `curl` request against the running dev backend with zero cookies attached, revoked it through
+the UI, and confirmed the same `curl` call then correctly `401`s.
+
+---
+
 ## Stack deviations from spec §5 (and why)
 
 | Spec says | Built instead | Why |
@@ -2398,7 +2499,11 @@ start uvicorn fresh rather than trusting the reloader.
   gated correctly per spec §3.3's matrix — see §23. Bulk product CSV import/export and bulk
   activate/archive/delete actions are now built end-to-end too, verified with a real file upload
   through the actual admin UI, not just a pytest fixture — see §24. This closes every named Phase 4
-  admin item from spec §29's roadmap. Test suite is now 84 backend / 32 frontend, all green.
-  Remaining never-built items: Elasticsearch/synonyms/semantic search, MFA, Redis/Celery (so no
-  async payment webhooks, no 30s feature-flag cache), Playwright E2E, and an actual deployment
-  target (still native-Windows dev only).
+  admin item from spec §29's roadmap. MFA (TOTP, recovery codes, login-time second-factor gating)
+  and admin API keys (scoped, peppered-argon2, IP-allowlistable) are now also built end-to-end,
+  including account-settings and admin-panel UI — see §25; this also caught and fixed a genuine
+  pre-existing bug where `/auth/logout` never actually cleared cookies client-side. Test suite is
+  now 99 backend / 32 frontend, all green. Remaining never-built items: Elasticsearch/synonyms/
+  semantic search, Redis/Celery (so no async payment webhooks, no 30s feature-flag cache, no real
+  background job queue), Playwright E2E, and an actual deployment target (still native-Windows dev
+  only, no staging/production environment).

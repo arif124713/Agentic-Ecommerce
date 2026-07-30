@@ -1,16 +1,22 @@
+import datetime
 import hashlib
+import ipaddress
 import secrets
 from collections.abc import AsyncGenerator
 
 from fastapi import Depends, Request
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import api_keys
 from app.core.cookies import ACCESS_COOKIE, CART_SESSION_COOKIE, CSRF_COOKIE, REFRESH_COOKIE
 from app.core.errors import ForbiddenError, UnauthorizedError
 from app.core.security import decode_access_token
 from app.db.session import AsyncSessionLocal
-from app.models.auth import User
+from app.models.auth import ApiKey, User
 from app.repositories.auth import UserRepository
+
+API_KEY_HEADER = "X-API-Key"
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
@@ -78,6 +84,62 @@ def get_current_session_id(request: Request) -> str | None:
     return payload.get("sid") if payload else None
 
 
+def _ip_allowed(ip: str | None, allowlist: list[str] | None) -> bool:
+    if not allowlist:
+        return True
+    if ip is None:
+        return False
+    try:
+        candidate = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    for entry in allowlist:
+        try:
+            if candidate in ipaddress.ip_network(entry, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+async def _authenticate_api_key(request: Request, db: AsyncSession, *, permissions: tuple[str, ...]) -> User:
+    """spec §11.5: admin API keys sent as X-API-Key, argon2(key + pepper) at rest. No fast lookup
+    column holds the raw key, so candidates are narrowed by the (near-unique) stored prefix and
+    confirmed with a real argon2 verify — same reasoning as password auth, just keyed by prefix
+    instead of email."""
+    raw_key = request.headers.get(API_KEY_HEADER)
+    if raw_key is None:
+        raise UnauthorizedError("Authentication is required.")
+
+    stmt = select(ApiKey).where(ApiKey.key_prefix == raw_key[:12], ApiKey.revoked_at.is_(None))
+    candidates = (await db.execute(stmt)).scalars().all()
+    now = datetime.datetime.now(datetime.UTC)
+    key = next(
+        (
+            k
+            for k in candidates
+            if api_keys.verify_key(raw_key, k.key_hash)
+            and (k.expires_at is None or k.expires_at.replace(tzinfo=datetime.UTC) > now)
+        ),
+        None,
+    )
+    if key is None:
+        raise UnauthorizedError("This API key is invalid, revoked, or has expired.")
+
+    if not _ip_allowed(get_client_ip(request), key.ip_allowlist):
+        raise ForbiddenError("This API key is not allowed from this IP address.")
+
+    if not set(permissions).issubset(set(key.scopes)):
+        raise ForbiddenError("This API key is not scoped for this action.")
+
+    key.last_used_at = now
+    user = await UserRepository(db).get_by_id(key.created_by_user_id)
+    if user is None or user.status != "active":
+        raise UnauthorizedError("This API key's owning account is no longer active.")
+    await db.commit()
+    return user
+
+
 def require(*permissions: str):
     """Spec §3.2's `require(*permissions)` dependency. Resolves granted permissions from the
     access-token JWT's `perms` claim (set at login/refresh — see core/security.py) rather than a
@@ -86,6 +148,9 @@ def require(*permissions: str):
     documented gap (see done.MD's perm_ver note from Phase 2)."""
 
     async def dependency(request: Request, db: AsyncSession = Depends(get_db)) -> User:
+        if request.headers.get(API_KEY_HEADER) is not None:
+            return await _authenticate_api_key(request, db, permissions=permissions)
+
         token = request.cookies.get(ACCESS_COOKIE)
         if not token:
             raise UnauthorizedError("Authentication is required.")

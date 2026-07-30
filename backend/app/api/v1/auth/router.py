@@ -19,6 +19,11 @@ from app.schemas.auth import (
     EmailVerifyIn,
     ForgotPasswordIn,
     LoginIn,
+    MfaDisableIn,
+    MfaEnableIn,
+    MfaEnableOut,
+    MfaLoginVerifyIn,
+    MfaSetupOut,
     RegisterIn,
     ResetPasswordIn,
     SessionOut,
@@ -94,7 +99,8 @@ async def logout(
 ):
     await AuthService(db).logout(refresh_raw)
     clear_auth_cookies(response)
-    return Response(status_code=204)
+    response.status_code = 204
+    return response
 
 
 @router.post("/logout-all", status_code=204, dependencies=[Depends(verify_csrf)])
@@ -105,6 +111,54 @@ async def logout_all(
 ):
     await AuthService(db).logout_all(user)
     clear_auth_cookies(response)
+    response.status_code = 204
+    return response
+
+
+@router.post(
+    "/mfa/login-verify",
+    response_model=UserOut,
+    dependencies=[Depends(rate_limit("mfa_verify", limit=10, window_seconds=300))],
+)
+async def mfa_login_verify(
+    payload: MfaLoginVerifyIn,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    ip: str | None = Depends(get_client_ip),
+    ua_hash: str | None = Depends(get_user_agent_hash),
+    guest_cart_token: str | None = Depends(get_cart_session_cookie),
+):
+    user, user_out, tokens = await AuthService(db).complete_mfa_login(payload, ip=ip, user_agent_hash=ua_hash)
+    set_auth_cookies(
+        response,
+        access_token=tokens.access_token,
+        refresh_token=tokens.refresh_token,
+        csrf_token=tokens.csrf_token,
+        refresh_max_age=tokens.refresh_max_age,
+    )
+    if guest_cart_token:
+        await CartService(db).merge_guest_into_user(session_token=guest_cart_token, user=user)
+        clear_cart_session_cookie(response)
+    return user_out
+
+
+@router.post("/mfa/setup", response_model=MfaSetupOut, dependencies=[Depends(verify_csrf)])
+async def mfa_setup(db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    return await AuthService(db).mfa_setup(user)
+
+
+@router.post("/mfa/enable", response_model=MfaEnableOut, dependencies=[Depends(verify_csrf)])
+async def mfa_enable(
+    payload: MfaEnableIn, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)
+):
+    return await AuthService(db).mfa_enable(user, payload)
+
+
+@router.post("/mfa/disable", status_code=204, dependencies=[Depends(verify_csrf)])
+async def mfa_disable(
+    payload: MfaDisableIn, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)
+):
+    await AuthService(db).mfa_disable(user, payload)
     return Response(status_code=204)
 
 

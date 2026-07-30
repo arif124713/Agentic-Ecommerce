@@ -1,6 +1,6 @@
 import datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 
 class RegisterIn(BaseModel):
@@ -45,6 +45,37 @@ class UserOut(BaseModel):
     mfa_enabled: bool
     roles: list[str]
     permissions: list[str]
+
+
+class MfaSetupOut(BaseModel):
+    secret: str
+    otpauth_uri: str
+    qr_data_uri: str
+
+
+class MfaEnableIn(BaseModel):
+    code: str = Field(min_length=6, max_length=6)
+
+
+class MfaEnableOut(BaseModel):
+    recovery_codes: list[str]
+
+
+class MfaDisableIn(BaseModel):
+    password: str = Field(min_length=1, max_length=128)
+    code: str = Field(min_length=6, max_length=64)
+
+
+class MfaLoginVerifyIn(BaseModel):
+    challenge_token: str
+    code: str | None = Field(default=None, min_length=6, max_length=64)
+    recovery_code: str | None = Field(default=None, min_length=6, max_length=64)
+
+    @model_validator(mode="after")
+    def _exactly_one_factor(self) -> "MfaLoginVerifyIn":
+        if bool(self.code) == bool(self.recovery_code):
+            raise ValueError("Provide exactly one of code or recovery_code.")
+        return self
 
 
 class SessionOut(BaseModel):

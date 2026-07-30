@@ -7,6 +7,7 @@ from sqlalchemy.orm import selectinload
 from app.models.auth import (
     EmailVerificationToken,
     LoginAttempt,
+    MfaChallengeToken,
     PasswordResetToken,
     RefreshToken,
     Role,
@@ -106,7 +107,11 @@ class OneTimeTokenRepository:
     avoids duplicating the same six lines twice (spec §8.3 both tables are `token_hash`,
     `expires_at`, `used_at`)."""
 
-    def __init__(self, session: AsyncSession, model: type[EmailVerificationToken] | type[PasswordResetToken]):
+    def __init__(
+        self,
+        session: AsyncSession,
+        model: type[EmailVerificationToken] | type[PasswordResetToken] | type[MfaChallengeToken],
+    ):
         self.session = session
         self.model = model
 

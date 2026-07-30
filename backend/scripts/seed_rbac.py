@@ -43,6 +43,7 @@ PERMISSIONS = [
     "iam:user:assign_role",
     "system:feature_flag:write",
     "system:audit_log:read",
+    "system:api_key:manage",
     "analytics:dashboard:read",
 ]
 

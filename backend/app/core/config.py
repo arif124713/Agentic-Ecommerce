@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     # the 2.13.0 upgrade (spec §22.7's dependency-audit checklist), and the old 20-byte default
     # ("dev-secret-change-me") triggered it on every single token issued in dev/test.
     app_secret_key: str = Field(default="dev-secret-change-me-please-32bytes", alias="APP_SECRET_KEY")
+    # spec §11.5: admin API keys are stored as argon2(key + pepper) — a pepper distinct from
+    # APP_SECRET_KEY so a leaked JWT signing key alone can't be used to forge/verify API keys too.
+    admin_api_key_pepper: str = Field(default="dev-pepper-change-me-please-32bytes", alias="ADMIN_API_KEY_PEPPER")
     app_base_url: str = Field(default="http://localhost:5173", alias="APP_BASE_URL")
     api_prefix: str = Field(default="/api/v1", alias="API_PREFIX")
     # Distinct from app_base_url (the frontend's origin, used for email links): this is the
@@ -48,6 +51,7 @@ class Settings(BaseSettings):
     jwt_refresh_ttl_seconds: int = Field(default=1_209_600, alias="JWT_REFRESH_TTL_SECONDS")
     email_verification_ttl_seconds: int = Field(default=86_400, alias="EMAIL_VERIFICATION_TTL_SECONDS")
     password_reset_ttl_seconds: int = Field(default=3_600, alias="PASSWORD_RESET_TTL_SECONDS")
+    mfa_challenge_ttl_seconds: int = Field(default=300, alias="MFA_CHALLENGE_TTL_SECONDS")
     cookie_domain: str | None = Field(default=None, alias="COOKIE_DOMAIN")
     mail_backend: str = Field(default="console", alias="MAIL_BACKEND")
 
@@ -107,4 +111,6 @@ def get_settings() -> Settings:
             # sign/verify time (spec §22.7's dependency audit surfaced it), so failing fast here
             # catches a misconfigured production secret before the first token is ever issued.
             raise RuntimeError("APP_SECRET_KEY must be at least 32 bytes long in production")
+        if settings.admin_api_key_pepper.startswith("dev-pepper-change-me"):
+            raise RuntimeError("ADMIN_API_KEY_PEPPER must be set in production")
     return settings

@@ -117,8 +117,24 @@ class PaymentRepository:
         self.session.add(event)
 
     async def get_by_order(self, order_id: int) -> Payment | None:
-        stmt = select(Payment).where(Payment.order_id == order_id).order_by(Payment.created_at.desc())
+        # populate_existing=True is load-bearing, not cosmetic: the payment webhook (spec §12.5)
+        # settles this row on its own DB session/transaction, so the calling session's identity
+        # map still holds the pre-webhook object (e.g. status="processing") unless forced to
+        # refresh — the exact same stale-object trap as lock_variants() above, just for payments
+        # instead of stock. Without this, create_order()'s own response showed order.status
+        # "confirmed" next to a nested payment.status still "processing" — caught by a live curl
+        # check, not by pytest (see done.MD).
+        stmt = (
+            select(Payment)
+            .where(Payment.order_id == order_id)
+            .order_by(Payment.created_at.desc())
+            .execution_options(populate_existing=True)
+        )
         return (await self.session.execute(stmt)).scalars().first()
+
+    async def get_event_by_id(self, event_id: str) -> PaymentEvent | None:
+        stmt = select(PaymentEvent).where(PaymentEvent.event_id == event_id)
+        return (await self.session.execute(stmt)).scalar_one_or_none()
 
 
 class ShipmentRepository:

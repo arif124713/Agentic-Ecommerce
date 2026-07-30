@@ -228,6 +228,9 @@ class PaymentEvent(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     payment_id: Mapped[int] = mapped_column(ForeignKey("payments.id", ondelete="CASCADE"), nullable=False)
+    # Webhook delivery id (spec §12.5 step 2: "deduplicates on event_id") — unique so a replayed
+    # or duplicate-delivered webhook can never be applied twice.
+    event_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     event_type: Mapped[str] = mapped_column(String(40), nullable=False)
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
     received_at: Mapped[datetime.datetime] = mapped_column(nullable=False)

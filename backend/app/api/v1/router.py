@@ -17,6 +17,7 @@ from app.api.v1.auth import router as auth
 from app.api.v1.cart import router as cart
 from app.api.v1.discovery import router as discovery
 from app.api.v1.orders import router as orders
+from app.api.v1.payments import router as payments
 from app.api.v1.public import catalog
 from app.api.v1.public import cms
 from app.api.v1.public import reviews
@@ -35,6 +36,7 @@ api_router.include_router(cart.router)
 api_router.include_router(addresses.router)
 api_router.include_router(account_support.router)
 api_router.include_router(orders.router)
+api_router.include_router(payments.router)
 api_router.include_router(admin_catalog.router)
 api_router.include_router(admin_orders.router)
 api_router.include_router(admin_users.router)

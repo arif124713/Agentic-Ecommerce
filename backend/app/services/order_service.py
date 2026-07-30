@@ -1,16 +1,23 @@
+import asyncio
 import datetime
+import json
 from decimal import Decimal
 
+import httpx
+import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import AuditContext, to_json_safe
 from app.core.config import get_settings
 from app.core.errors import ConflictError, ItemUnavailableError, NotFoundError
 from app.core.payment import (
+    PaymentResult,
     generate_order_number,
     generate_refund_transaction_id,
     generate_tracking_number,
+    generate_webhook_event_id,
     get_payment_provider,
+    sign_webhook,
 )
 from app.core.pricing import compute_shipping_fee, compute_tax, q2
 from app.core.timeutil import utcnow
@@ -44,8 +51,10 @@ from app.schemas.order import (
     ShipmentEventOut,
     TrackingOut,
 )
+from app.schemas.payment import PaymentWebhookEventIn
 
 settings = get_settings()
+logger = structlog.get_logger("blackcart.payment")
 
 # spec §9.5 — the only legal transitions; system-driven fulfilment progression below is checked
 # against this same table so a future admin-transition endpoint can't diverge from it.
@@ -290,61 +299,188 @@ class OrderService:
                     )
                 )
 
-        # Payment — synchronous (spec §12.5's async webhook chain needs Celery; not available).
         result = self.provider.confirm(method=payload.payment_method, amount=totals.grand_total, card_number=payload.card_number)
-        payment = Payment(
-            order_id=order.id,
-            method=payload.payment_method,
-            transaction_id=result.transaction_id,
-            status=result.status,
-            amount=totals.grand_total,
-            currency=order.currency,
-            card_last4=result.card_last4,
-            card_brand=result.card_brand,
-            authorised_at=now if result.status == "succeeded" else None,
-            captured_at=now if result.status == "succeeded" else None,
-            failed_at=now if result.status == "failed" else None,
-            failure_code=result.failure_code,
-            failure_message=result.failure_message,
-            created_at=now,
-            updated_at=now,
-        )
-        self.payments.add(payment)
-        await self.session.flush()
-        self.payments.add_event(
-            PaymentEvent(
-                payment_id=payment.id,
-                event_type=f"payment.{result.status}",
-                payload={"transaction_id": result.transaction_id, "method": payload.payment_method},
-                received_at=now,
-                processed_at=now,
-            )
-        )
 
-        if result.status == "succeeded" or payload.payment_method == "cod":
-            order.payment_status = "pending" if payload.payment_method == "cod" else "paid"
-            order.paid_total = Decimal("0") if payload.payment_method == "cod" else totals.grand_total
+        if payload.payment_method == "cod":
+            # spec §12.2: "No gateway call" for COD — confirmed immediately, no webhook round-trip;
+            # money is collected on delivery, not now.
+            payment = Payment(
+                order_id=order.id,
+                method="cod",
+                transaction_id=result.transaction_id,
+                status="succeeded",
+                amount=totals.grand_total,
+                currency=order.currency,
+                authorised_at=now,
+                captured_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+            self.payments.add(payment)
+            await self.session.flush()
+            self.payments.add_event(
+                PaymentEvent(
+                    payment_id=payment.id,
+                    event_id=generate_webhook_event_id(),
+                    event_type="payment.succeeded",
+                    payload={"transaction_id": result.transaction_id, "method": "cod"},
+                    received_at=now,
+                    processed_at=now,
+                )
+            )
+            order.payment_status = "pending"
+            order.paid_total = Decimal("0")
             self._transition(order, "confirmed", actor_type="system")
             date_from, date_to = self._delivery_window(now)
             order.promised_delivery_from = date_from
             order.promised_delivery_to = date_to
-            # Deliberately NOT auto-advanced to "shipped" here: spec §9.5 only allows customer
-            # cancellation up through PROCESSING, so jumping straight to SHIPPED in the same
-            # request would make cancellation permanently unreachable. _reconcile() advances
-            # confirmed -> processing -> packed -> shipped after PRE_SHIP_DELAY_MINUTES instead,
-            # giving a real (if short) cancellable window — see done.MD.
             cart.status = "converted"
             cart.converted_order_id = order.id
-        else:
-            order.payment_status = "failed"
-            self._transition(order, "failed", actor_type="system", reason=result.failure_message)
-            # Release the stock we just decremented — payment didn't go through.
-            for i in cart.items:
-                locked[i.variant_id].stock += i.quantity
+            order.updated_at = utcnow()
+            await self.session.commit()
+            return await self._to_detail(await self.orders.get_by_id(order.id))
 
-        order.updated_at = utcnow()
+        # Card: create the payment intent in PROCESSING (spec §12.4) and commit so it's durable —
+        # the webhook call below is a genuinely separate signature-verified HTTP request/response
+        # cycle (spec §12.5), not a direct function call, so the order/payment rows it acts on
+        # must already be visible outside this in-flight transaction.
+        payment = Payment(
+            order_id=order.id,
+            method=payload.payment_method,
+            transaction_id=result.transaction_id,
+            status="processing",
+            amount=totals.grand_total,
+            currency=order.currency,
+            card_last4=result.card_last4,
+            card_brand=result.card_brand,
+            created_at=now,
+            updated_at=now,
+        )
+        self.payments.add(payment)
         await self.session.commit()
+
+        await self._settle_card_payment_via_webhook(order_id=order.id, result=result)
         return await self._to_detail(await self.orders.get_by_id(order.id))
+
+    async def _settle_card_payment_via_webhook(self, *, order_id: int, result: PaymentResult) -> None:
+        """Builds and posts a real HMAC-signed webhook event to this same app's own
+        POST /payments/webhook/simulator (spec §12.5) — a genuine signed HTTP request/response
+        cycle through the full FastAPI stack (routing, signature verification, its own DB session),
+        not an in-process function call. There's no Celery/Redis in this stack to fire this
+        fully asynchronously on a delay, so it's awaited synchronously right here instead — a
+        documented tradeoff (see done.MD): the webhook endpoint itself is fully real, idempotent,
+        and replay-safe, so a genuinely delayed/retried delivery would behave identically."""
+        event_body = {
+            "event_id": generate_webhook_event_id(),
+            "event_type": f"payment.{result.status}",
+            "order_id": order_id,
+            "transaction_id": result.transaction_id,
+            "status": result.status,
+            "failure_code": result.failure_code,
+            "failure_message": result.failure_message,
+        }
+        body_bytes = json.dumps(event_body).encode("utf-8")
+        signature = sign_webhook(body_bytes)
+
+        from app.main import app as fastapi_app  # deferred: avoids a circular import at load time
+
+        transport = httpx.ASGITransport(app=fastapi_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://internal") as client:
+            for attempt in range(3):
+                try:
+                    resp = await client.post(
+                        f"{settings.api_prefix}/payments/webhook/simulator",
+                        content=body_bytes,
+                        headers={"X-Signature": signature, "Content-Type": "application/json"},
+                    )
+                    if resp.status_code == 200:
+                        return
+                except httpx.HTTPError:
+                    pass
+                await asyncio.sleep(0.05 * (attempt + 1))
+        logger.warning("payment_webhook_delivery_failed", order_id=order_id, transaction_id=result.transaction_id)
+
+    async def apply_payment_webhook_event(self, payload: dict) -> None:
+        """The single source of truth for applying a payment webhook's outcome (spec §12.5 steps
+        3-4) — called by the webhook router, on its own DB session, exactly as a real external PSP
+        callback would be. Deliberately re-derives everything it needs (payment/order/cart/stock)
+        from the database rather than trusting any in-memory state from whatever request created
+        the payment intent, since a real webhook can (and here, structurally does) arrive on a
+        completely separate request."""
+        event = PaymentWebhookEventIn.model_validate(payload)
+
+        # spec §12.5 step 2: dedup on event_id — a replayed/duplicate delivery is a silent no-op.
+        if await self.payments.get_event_by_id(event.event_id) is not None:
+            return
+
+        payment = await self.payments.get_by_order(event.order_id)
+        if payment is None or payment.transaction_id != event.transaction_id:
+            raise NotFoundError("No matching payment intent for this webhook event.")
+
+        now = utcnow()
+        # spec §12.5 step 3: record the event before processing — even an event this handler is
+        # about to ignore (already-terminal payment) still gets a permanent audit trail entry.
+        self.payments.add_event(
+            PaymentEvent(
+                payment_id=payment.id,
+                event_id=event.event_id,
+                event_type=event.event_type,
+                payload=payload,
+                received_at=now,
+            )
+        )
+        await self.session.flush()
+
+        # spec §12.5 step 4: idempotent + out-of-order tolerant — only a still-PROCESSING payment
+        # can be moved to a terminal state; a "processing" (or a stray duplicate) arriving after a
+        # terminal outcome is ignored rather than re-applied.
+        if payment.status != "processing":
+            await self.session.commit()
+            return
+
+        order = await self.orders.get_by_id(payment.order_id)
+
+        if event.status == "succeeded":
+            payment.status = "succeeded"
+            payment.authorised_at = now
+            payment.captured_at = now
+            order.payment_status = "paid"
+            order.paid_total = order.grand_total
+            self._transition(order, "confirmed", actor_type="system")
+            # Deliberately NOT auto-advanced to "shipped" here: spec §9.5 only allows customer
+            # cancellation up through PROCESSING, so jumping straight to SHIPPED would make
+            # cancellation permanently unreachable. _reconcile() advances confirmed -> processing
+            # -> packed -> shipped after PRE_SHIP_DELAY_MINUTES instead — see done.MD.
+            date_from, date_to = self._delivery_window(now)
+            order.promised_delivery_from = date_from
+            order.promised_delivery_to = date_to
+
+            cart = await self.carts.get_active_by_user(order.user_id)
+            if cart is not None:
+                cart.status = "converted"
+                cart.converted_order_id = order.id
+        else:
+            payment.status = "failed"
+            payment.failed_at = now
+            payment.failure_code = event.failure_code
+            payment.failure_message = event.failure_message
+            order.payment_status = "failed"
+            self._transition(order, "failed", actor_type="system", reason=event.failure_message)
+
+            # Release the stock decremented at order-creation time — payment didn't go through.
+            # Re-locked fresh (not the caller's in-memory rows, which belong to an already-
+            # committed, unrelated transaction) since a real webhook can land on any request.
+            qty_by_variant: dict[int, int] = {}
+            for item in order.items:
+                qty_by_variant[item.variant_id] = qty_by_variant.get(item.variant_id, 0) + item.quantity
+            locked = await self.orders.lock_variants(sorted(qty_by_variant))
+            for variant_id, qty in qty_by_variant.items():
+                if variant_id in locked:
+                    locked[variant_id].stock += qty
+
+        payment.updated_at = now
+        order.updated_at = now
+        await self.session.commit()
 
     def _transition(self, order: Order, to_status: str, *, actor_type: str, reason: str | None = None) -> None:
         allowed = ORDER_TRANSITIONS.get(order.status, set())

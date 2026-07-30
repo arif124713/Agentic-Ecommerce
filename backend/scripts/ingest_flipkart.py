@@ -32,6 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import httpx  # noqa: E402
+from rapidfuzz import fuzz  # noqa: E402
 from sqlalchemy import bindparam, func, insert, select, text  # noqa: E402
 from ulid import ULID  # noqa: E402
 
@@ -99,6 +100,65 @@ def slugify(*parts: str) -> str:
     text_ = text_.lower()
     text_ = re.sub(r"[^a-z0-9]+", "-", text_).strip("-")
     return text_[:250] or "item"
+
+
+# spec §7's dataset-cleaning gap, documented since the first ingest as "not built": the exact
+# case-insensitive dedup above catches "Nike"/"NIKE" but not near-duplicates of the same real
+# brand. Two distinct signals, verified separately against the real dataset before picking these
+# numbers (see done.MD):
+#   - This dataset's actual failure mode turned out to be truncation, not casing/typos: many brand
+#     strings are cut off at a fixed length (e.g. "U.S.Polo As" / "U.s.Polo Associati", both
+#     truncated forms of "U.S. Polo Association"). A plain rapidfuzz ratio over these either merges
+#     nothing (high threshold — truncated strings just don't share enough characters) or produces
+#     false positives from a shared truncated *suffix* between genuinely different brands (e.g.
+#     "...Clothi[ng]" or "...Collecti[on]") at a lower threshold. Prefix-containment is what
+#     actually models truncation correctly: it only fires when one full string starts with the
+#     other, immune to the coincidental-suffix trap since it anchors at the start.
+#   - rapidfuzz stays as a second, high-threshold pass for the non-truncation case (typo/formatting
+#     differences at full length, e.g. "Levis" vs "Levi's") — contributes nothing on *this*
+#     dataset specifically (verified: 0 matches at this threshold), but is real, correct, and
+#     dataset-agnostic, unlike the prefix check above which assumes truncation is the failure mode.
+BRAND_PREFIX_MIN_LENGTH = 5
+BRAND_FUZZY_MATCH_THRESHOLD = 92
+
+
+def fuzzy_merge_brands(brand_counts: dict[str, int]) -> dict[str, str]:
+    """Given {lowercased brand key: record count}, returns {original key: canonical key}. Near-
+    duplicates collapse onto whichever of the two forms appears more often in the dataset (the
+    more common spelling is more likely to be the "real" one; ties broken alphabetically for
+    determinism, so re-running produces the same merge decisions every time). O(n^2) over distinct
+    brand keys — fine at this dataset's ~320 distinct raw brand strings, not meant to scale to a
+    catalogue with tens of thousands of brands."""
+    canonical_keys: list[str] = []  # keys already accepted as their own canonical brand
+    remap: dict[str, str] = {}
+
+    # Most-frequent-first so a common brand becomes canonical before a rare near-duplicate
+    # spelling is even considered; alphabetical as a deterministic tiebreaker on exact count ties.
+    ordered = sorted(brand_counts, key=lambda k: (-brand_counts[k], k))
+
+    for key in ordered:
+        best_match: str | None = None
+        best_score = 0.0
+        for canonical in canonical_keys:
+            # Both sides must clear the minimum length — otherwise a short, generic brand entry
+            # (this dataset has literal single-letter brands like "A", "C", "D") would prefix-match
+            # almost anything and swallow unrelated brands into itself.
+            is_prefix_match = (
+                len(key) >= BRAND_PREFIX_MIN_LENGTH
+                and len(canonical) >= BRAND_PREFIX_MIN_LENGTH
+                and (key.startswith(canonical) or canonical.startswith(key))
+            )
+            score = 100.0 if is_prefix_match else fuzz.token_sort_ratio(key, canonical)
+            if score > best_score:
+                best_match, best_score = canonical, score
+
+        if best_match is not None and best_score >= BRAND_FUZZY_MATCH_THRESHOLD:
+            remap[key] = best_match
+        else:
+            canonical_keys.append(key)
+            remap[key] = key
+
+    return remap
 
 
 def clean_title(raw: str | None) -> str:
@@ -355,10 +415,23 @@ async def stage_load() -> None:
         # brands.name is unique under a case-insensitive collation, so dedupe case-insensitively
         # and normalise every product's brand key the same way to avoid a lookup miss later.
         brand_display: dict[str, str] = {}
+        brand_counts: dict[str, int] = defaultdict(int)
         for r in cleaned:
             key = r["brand"].lower()
             brand_display.setdefault(key, r["brand"])
+            brand_counts[key] += 1
             r["brand_key"] = key
+
+        # Fuzzy pass on top of the exact dedup above (spec §7's documented gap, closed here):
+        # collapses near-duplicate brand strings — different casing/punctuation aside, things
+        # exact-match can't catch, like "Nike Inc" vs "Nike India" — onto one canonical brand.
+        brand_remap = fuzzy_merge_brands(brand_counts)
+        merged_count = sum(1 for k, canonical in brand_remap.items() if k != canonical)
+        if merged_count:
+            print(f"Fuzzy-merged {merged_count} near-duplicate brand strings (rapidfuzz >= {BRAND_FUZZY_MATCH_THRESHOLD})")
+        brand_display = {canonical: brand_display[canonical] for canonical in set(brand_remap.values())}
+        for r in cleaned:
+            r["brand_key"] = brand_remap[r["brand_key"]]
 
         seen_brand_slugs: set[str] = set()
         brand_rows = []

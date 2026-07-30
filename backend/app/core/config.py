@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     # spec §11.5: admin API keys are stored as argon2(key + pepper) — a pepper distinct from
     # APP_SECRET_KEY so a leaked JWT signing key alone can't be used to forge/verify API keys too.
     admin_api_key_pepper: str = Field(default="dev-pepper-change-me-please-32bytes", alias="ADMIN_API_KEY_PEPPER")
+    # HMAC secret for the simulated payment webhook (spec §12.5) — a separate secret from
+    # APP_SECRET_KEY/ADMIN_API_KEY_PEPPER, same "must be changed in production" fail-fast pattern.
+    payment_webhook_secret: str = Field(
+        default="dev-webhook-secret-change-me-please-32b", alias="PAYMENT_WEBHOOK_SECRET"
+    )
     app_base_url: str = Field(default="http://localhost:5173", alias="APP_BASE_URL")
     api_prefix: str = Field(default="/api/v1", alias="API_PREFIX")
     # Distinct from app_base_url (the frontend's origin, used for email links): this is the
@@ -113,4 +118,6 @@ def get_settings() -> Settings:
             raise RuntimeError("APP_SECRET_KEY must be at least 32 bytes long in production")
         if settings.admin_api_key_pepper.startswith("dev-pepper-change-me"):
             raise RuntimeError("ADMIN_API_KEY_PEPPER must be set in production")
+        if settings.payment_webhook_secret.startswith("dev-webhook-secret-change-me"):
+            raise RuntimeError("PAYMENT_WEBHOOK_SECRET must be set in production")
     return settings

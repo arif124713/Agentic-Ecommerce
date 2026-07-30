@@ -50,8 +50,11 @@ too, with per-row validation errors on import verified live via a real file uplo
 and admin API keys — spec §10.8/§11.5, previously entirely unbuilt — are now **end-to-end
 functional** too: real second-factor login gating, recovery codes, and scoped/peppered API-key
 authentication, verified live through the browser and against the running dev backend, catching a
-real pre-existing bug where logout never actually cleared cookies (§25). Running **natively on
-Windows** — no Docker/Redis/Celery/Elasticsearch (see §5/§6 below for why and what that changes).
+real pre-existing bug where logout never actually cleared cookies (§25). Card payments now settle
+through a real signature-verified webhook (spec §12.5) instead of an in-request status flip, and the
+ingestion pipeline now has verified rapidfuzz + prefix-containment brand deduplication (§26). Running
+**natively on Windows** — no Docker/Redis/Celery/Elasticsearch (see §5/§6 below for why and what that
+changes).
 
 ---
 
@@ -68,7 +71,7 @@ Windows** — no Docker/Redis/Celery/Elasticsearch (see §5/§6 below for why an
 | 9 | Domain model & business rules | 🟡 | Pricing, cart, inventory (row-locked, now with an append-only movement ledger — §10 below), order state machine, coupon validation chain, review eligibility/moderation rules (§9.7 — §14 below) all implemented; shipping is flat-rate not zone-based |
 | 10 | API design | 🟡 | Conventions followed (envelope, error codes, pagination shape) for catalogue + auth + cart/checkout/orders + admin endpoints |
 | 11 | Authentication & session management | ✅ | Backend built end-to-end against spec's `/api/v1/auth/*` contract (§10.8) — see §8 below. MFA (TOTP, recovery codes, login-time gating) and admin API keys (scoped, peppered, IP-allowlistable) now built too — see §25 |
-| 12 | Simulated payment gateway | 🟡 | Deterministic test cards + COD implemented synchronously (§9 below); wallet OTP methods (bKash/Nagad/Rocket/UPI), 3DS challenge step, and async webhook/Celery retry chain not built |
+| 12 | Simulated payment gateway | 🟡 | Deterministic test cards + COD implemented (§9 below); card payments now settle through a real signature-verified webhook (§26), synchronously awaited in place of a Celery retry chain; wallet OTP methods (bKash/Nagad/Rocket/UPI) and the 3DS challenge step not built |
 | 13 | Order fulfilment & delivery simulation | 🟡 | Full T+0..T+34h shipment timeline simulated and lazily reconciled against wall-clock time (§9 below); admin can now manually transition/refund orders (§10 below), but there's no ops queue/pick-list UI (§13.3) |
 | 14 | Search & discovery | 🟡 | Real relevance-ranked search, autocomplete, zero-result fallback, recommendation rails, wishlist, recently-viewed, back-in-stock alerts, newsletter all built against a MySQL backend instead of Elasticsearch — full details in §11 below |
 | 15–16 | Caching, background jobs | ⬜ | Not started — no Redis/Celery |
@@ -644,12 +647,11 @@ caught proactively this time and fixed before ever applying it).
 provider is an adapter swap. All of spec §12.3's deterministic test cards work exactly as
 documented (`4242...4242` succeeds, `4000...0002` declines, `...9995` insufficient funds,
 `...0069` expired, `...0119` gateway error); anything else is sampled at
-`PAYMENT_SIMULATOR_SUCCESS_RATE`. Confirmation is **synchronous** — spec §12.5's async webhook
-chain (HMAC-signed callback, `payment_events` row, exponential-backoff retries) needs Celery, which
-isn't in this native-Windows stack; `payment_events` rows are still written, just from the
-in-request code path instead of a real webhook POST. Only `card` and `cod` methods are implemented
-— bKash/Nagad/Rocket/UPI's OTP-redirect flow and the 3DS-challenge test card are treated as
-instant successes rather than building the extra confirmation round-trip.
+`PAYMENT_SIMULATOR_SUCCESS_RATE`. Card payments now settle through a real HMAC-signed webhook
+round-trip (spec §12.5) — see §26 below for the full writeup, including a stale-object bug it
+surfaced. Only `card` and `cod` methods are implemented — bKash/Nagad/Rocket/UPI's OTP-redirect flow
+and the 3DS-challenge test card are treated as instant successes rather than building the extra
+confirmation round-trip.
 
 ### Order state machine & delivery simulation (spec §9.5, §13.1) — the interesting part
 
@@ -2419,6 +2421,101 @@ the UI, and confirmed the same `curl` call then correctly `401`s.
 
 ---
 
+## 26. Async payment webhook and brand fuzzy-dedup (spec §12.5, §7) ✅
+
+Closes two more items off the running gap list: card payments now settle through a real,
+independently-callable, signature-verified webhook instead of an in-request status flip, and the
+catalogue ingestion pipeline now has real fuzzy brand deduplication instead of exact-match-only.
+
+### Payment webhook (`POST /payments/webhook/simulator`)
+
+`core/payment.py` gained `sign_webhook`/`verify_webhook_signature` — spec §12.5's exact
+`X-Signature: t=<ts>,v1=<hmac_sha256>` shape, HMAC-SHA256 over `"{ts}.{body}"` (binding the
+timestamp into the signed bytes, the same convention real PSPs like Stripe use, so a captured
+signature can't be replayed with a forged timestamp), rejecting anything outside a 5-minute window.
+A new `PaymentEvent.event_id` column (migration `f35ce9ce2c1b`, nullable-then-backfilled-then-NOT
+NULL since existing rows predate the column) gives spec's "deduplicates on event_id" step something
+to dedupe against.
+
+`create_order()` no longer decides a card payment's final status inline. It creates the `Payment`
+row as `processing` (spec §12.4's lifecycle), commits, then calls a new `_settle_card_payment_via_webhook`
+that builds a signed event and POSTs it to this same app's own webhook endpoint — through a real
+`httpx.AsyncClient(transport=httpx.ASGITransport(app=...))`, i.e. an actual HTTP request/response
+cycle through the full FastAPI stack (routing, signature verification, its own separate DB session
+in production), not a direct function call. The webhook handler
+(`OrderService.apply_payment_webhook_event`) is the single source of truth for applying the outcome:
+dedupes on `event_id`, records the event before processing (spec step 3), and only ever moves a
+still-`processing` payment to a terminal state — a stray/duplicate/out-of-order event describing an
+already-resolved payment is a silent no-op, exactly as spec §12.5 step 4 describes. COD is untouched
+(spec §12.2: "No gateway call" for COD), still confirmed synchronously inline.
+
+**Documented tradeoff, not a shortcut**: there's no Celery/Redis in this stack to fire the webhook
+call asynchronously on a real delay, so `create_order()` `await`s the round-trip before returning —
+the customer-facing response and every existing test's assumption (order already confirmed/failed by
+the time `POST /orders` returns) stay exactly as they were. The webhook endpoint itself doesn't know
+or care whether its caller awaited it or arrived six hours later on a retry; it's fully real,
+idempotent, and replay-safe either way, so a genuinely decoupled/delayed delivery mechanism could be
+dropped in later without touching the endpoint's contract.
+
+### A real bug this surfaced, caught by a live `curl` check, not by pytest
+
+The first working version returned `order.status: "confirmed"` next to `payment.status: "processing"`
+in the very same response — a real, live-reproducible inconsistency invisible to my own pytest suite
+(which explicitly `db_session.refresh()`s objects, masking exactly this). Root cause:
+`PaymentRepository.get_by_order()` had no `populate_existing=True`, so once the webhook settled the
+payment on its own session/transaction, `create_order()`'s original session kept serving its stale,
+already-loaded `Payment` object from its identity map — the identical failure mode already documented
+once before in this file for cart items (§9's bug #2), now reproduced in a new place. Fixed the same
+way: `populate_existing=True` on that query. A second live check (a declined test card against a
+fresh product with known stock) confirmed the failure path's stock-release logic is correct too.
+
+### Brand fuzzy-dedup (`scripts/ingest_flipkart.py`)
+
+Added `fuzzy_merge_brands()` — but the real work here was *discovering what this dataset's actual
+near-duplication looks like* before picking a threshold, rather than assuming rapidfuzz alone would
+obviously help. Tested against the real 30k-record raw dataset directly (no DB writes): a plain
+`rapidfuzz.fuzz.token_sort_ratio` pass found **zero** merges at a safe threshold (92) and produced
+**false positives** at a looser one (e.g. `"Fuel Clothi"` → `"ECOLINE Clothi"`, two unrelated brands
+that only share a truncated trailing word). The reason: this dataset's brand strings are truncated
+at a fixed source length, not just casually mis-cased/typo'd, so a suffix-insensitive ratio can't
+tell "same brand, cut short two different ways" from "different brand, coincidentally cut short to
+the same trailing fragment." Prefix-containment (one full string starts with the other, both sides
+past a 5-character floor to keep this dataset's genuine single-letter brands like `"A"`/`"C"`/`"D"`
+from swallowing unrelated longer ones) is what actually models truncation correctly, since it anchors
+at the string's start instead of matching anywhere. Combined with rapidfuzz as a second, dataset-
+agnostic pass for non-truncation near-duplicates (verified correct via a word-order-swapped synthetic
+case; contributes nothing on this specific dataset, by design a generic safety net, not dead code).
+
+**Honest result, not the assumed one**: done.MD's own prior note guessed "~325 raw brand strings
+likely still contain near-duplicates." Verified directly against the real data, this turned out to
+be mostly false — only **one** genuine pair exists (`"U.S.Polo As"` / `"U.s.Polo Associati"`, both
+truncated forms of "U.S. Polo Association"), and the merge logic finds exactly that one, nothing
+more, nothing less (322 distinct brand strings → 321 after merge). The live dev DB's catalogue was
+**not** re-ingested with this — the ingestion pipeline's `stage_load` does a full `TRUNCATE` of every
+catalogue table before reloading, which would destroy the real orders/reviews/audit-log rows already
+built up against current product/variant ids across many prior sessions. Re-running a from-scratch,
+destructive rebuild just to collapse one brand pair isn't a reasonable trade, so the pipeline code is
+correct and verified, ready for the next genuinely-fresh ingestion, but wasn't applied to this DB.
+
+### Verified
+
+**Backend**: 6 new webhook tests (`test_payment_webhook.py` — valid settlement, `event_id` dedup
+leaves exactly one event row, a late "processing" event after a terminal outcome is ignored, invalid
+signature and stale-timestamp rejection, mismatched transaction id rejection) and 6 new brand-dedup
+tests (`test_brand_dedup.py` — rapidfuzz-path merge, prefix-containment merge, short-brand
+protection, suffix-collision non-merge, determinism, and a direct check against the real raw
+dataset). Every pre-existing order/checkout/concurrency test (including the 50-concurrent-checkout
+oversell test) still passes unchanged — the awaited-webhook design is a genuine behavioural no-op
+from any caller's perspective. Full suite: 99 → **111 passed**.
+
+**Live, not just pytest**: real `curl` checkouts against the running dev backend with a fresh user
+each time — a successful card payment (confirmed the stale-object bug above, then confirmed the fix
+on a second run), and a declined card against a purpose-made product with known stock=10, confirming
+stock was correctly restored to exactly 10 (not silently left decremented) through the webhook's own
+independent stock-release path. Test data cleaned up afterward.
+
+---
+
 ## Stack deviations from spec §5 (and why)
 
 | Spec says | Built instead | Why |
@@ -2426,7 +2523,7 @@ the UI, and confirmed the same `curl` call then correctly `401`s.
 | `asyncmy` MySQL driver | `aiomysql` | Simpler pure-Python install on Windows without a Docker/Linux build toolchain; same SQLAlchemy async interface |
 | Docker Compose (MySQL, Redis, ES, MinIO, Celery) | Native local MySQL 8 only | Docker isn't installed on this machine (user chose "run natively" when asked) |
 | Redis (cache, sessions, rate limits, Celery broker) | Not present | No Docker/Redis. Auth (§8) now genuinely wants it (rate limiting, `perm_ver` cache) but was built without it — progressive lockout uses a DB table instead, and permissions are re-queried fresh each time |
-| Celery + beat | Not present | No background jobs exist yet (no orders/emails/invoices) |
+| Celery + beat | Not present | No task queue/worker process exists. The one place spec explicitly wants Celery-driven async work (§12.5's payment webhook) is built as a real signature-verified webhook endpoint instead (§26) — synchronously awaited via an in-process ASGI call rather than fired on a delay by a worker, a documented tradeoff, not a missing feature |
 | Elasticsearch + MySQL FULLTEXT fallback | Token-AND/OR `LIKE` relevance search on `title`/`search_keywords` | No Elasticsearch; the spec's own MySQL FULLTEXT ngram fallback was built and empirically found unusable (see §11's "real bug" writeup) and replaced with precise LIKE-based matching — the `ft_products` FULLTEXT index still exists on the schema but isn't queried |
 | MailHog (dev) / SMTP (prod) | Console-log mail backend (§8) | No SMTP server in this native setup; verification/reset links are read out of the structured log instead of a real inbox |
 | 9-stage ingestion CLI | 5-stage CLI (`fetch`/`profile`/`load`/`media`/`verify`) | §16 closed this — `clean`/`normalise`/`enrich` stay merged into `load` (30K records fit in memory, no benefit to intermediate formats); no `index` stage since there's no Elasticsearch |
@@ -2464,8 +2561,12 @@ start uvicorn fresh rather than trusting the reloader.
 - Product `color`/variant model is simplified: each real product got one `base_color` (from the
   source `Color` attribute) with size-only variants, not true multi-colour variant rows — the source
   dataset represents one colour per listing, not a colour×size matrix.
-- No rapidfuzz brand deduplication — worth revisiting before this data feeds a recommendation engine,
-  since near-duplicate brand strings would fragment brand-based features.
+- Rapidfuzz brand deduplication is now built — see §26 below. The live dev DB's catalogue itself
+  was **not** re-ingested with it (that requires the ingestion pipeline's full `TRUNCATE`-and-reload,
+  which would destroy the thousands of real orders/reviews/audit-log rows already built up against
+  the current product/variant ids — a destructive action not worth taking just to re-run brand
+  merging), but the pipeline code is correct and verified against the real raw dataset, ready for
+  the next from-scratch ingestion (a fresh environment, or a deliberate future re-ingest).
 - Initial JS bundle ~137 KB gzipped (spec budget: 180 KB) — fine today, will need route-level code
   splitting once auth/cart/checkout pages land.
 - Phase 2 (auth/RBAC) is now functional end-to-end (§8 above) — frontend and backend built in
@@ -2503,7 +2604,10 @@ start uvicorn fresh rather than trusting the reloader.
   and admin API keys (scoped, peppered-argon2, IP-allowlistable) are now also built end-to-end,
   including account-settings and admin-panel UI — see §25; this also caught and fixed a genuine
   pre-existing bug where `/auth/logout` never actually cleared cookies client-side. Test suite is
-  now 99 backend / 32 frontend, all green. Remaining never-built items: Elasticsearch/synonyms/
-  semantic search, Redis/Celery (so no async payment webhooks, no 30s feature-flag cache, no real
-  background job queue), Playwright E2E, and an actual deployment target (still native-Windows dev
-  only, no staging/production environment).
+  now 99 backend / 32 frontend, all green. Card payments now settle through a real signature-
+  verified webhook (spec §12.5) instead of an in-request status flip, and brand fuzzy-deduplication
+  (rapidfuzz + prefix-containment, spec §7) is now built and verified against the real raw dataset
+  — see §26; test suite is now 111 backend / 32 frontend. Remaining never-built items: Elasticsearch/
+  synonyms/semantic search, a real task queue/worker process (Redis/Celery — the 30s feature-flag
+  cache and `perm_ver` cache still don't exist), Playwright E2E, and an actual deployment target
+  (still native-Windows dev only, no staging/production environment).

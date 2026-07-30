@@ -1,11 +1,15 @@
 """Simulated payment gateway (spec §12). Isolated behind a Protocol, same shape as a real PSP
 integration would take, so swapping in a real provider later is an adapter change — the caller
 never sees the difference. Deterministic test cards mirror spec §12.3 exactly; anything else is
-sampled at PAYMENT_SIMULATOR_SUCCESS_RATE. Confirmation is synchronous here rather than the
-async webhook chain spec §12.5 describes (no Celery in this native-Windows setup — see done.MD)."""
+sampled at PAYMENT_SIMULATOR_SUCCESS_RATE. Card payments settle through a real, signature-verified
+webhook round-trip (spec §12.5) rather than a Celery task queue (none exists in this native-Windows
+setup — see done.MD for the documented tradeoff of awaiting that round-trip synchronously)."""
 
+import hashlib
+import hmac
 import random
 import secrets
+import time
 from decimal import Decimal
 from typing import NamedTuple, Protocol
 
@@ -14,6 +18,39 @@ from ulid import ULID
 from app.core.config import get_settings
 
 settings = get_settings()
+
+# spec §12.5 step 1: "rejects timestamps older than 5 minutes (replay protection)".
+WEBHOOK_REPLAY_WINDOW_SECONDS = 300
+
+
+def sign_webhook(body: bytes, *, timestamp: int | None = None) -> str:
+    """Returns an `X-Signature` header value in spec §12.5's `t=<ts>,v1=<hmac_sha256>` shape,
+    HMAC-SHA256 over `"{ts}.{body}"` (the same signed-payload convention real PSP webhooks like
+    Stripe's use, so binding the timestamp into the signed bytes — not just checking it separately
+    — is what actually prevents a captured signature from being replayed with a forged timestamp)."""
+    ts = timestamp if timestamp is not None else int(time.time())
+    signed_payload = f"{ts}.".encode("utf-8") + body
+    digest = hmac.new(settings.payment_webhook_secret.encode("utf-8"), signed_payload, hashlib.sha256).hexdigest()
+    return f"t={ts},v1={digest}"
+
+
+def verify_webhook_signature(body: bytes, signature: str) -> bool:
+    try:
+        parts = dict(part.split("=", 1) for part in signature.split(","))
+        ts = int(parts["t"])
+        provided_v1 = parts["v1"]
+    except (KeyError, ValueError):
+        return False
+
+    if abs(time.time() - ts) > WEBHOOK_REPLAY_WINDOW_SECONDS:
+        return False
+
+    expected = sign_webhook(body, timestamp=ts).split("v1=", 1)[1]
+    return hmac.compare_digest(expected, provided_v1)
+
+
+def generate_webhook_event_id() -> str:
+    return "evt_" + secrets.token_hex(12)
 
 _TEST_CARDS: dict[str, tuple[str, str | None, str | None]] = {
     "4242424242424242": ("succeeded", None, None),

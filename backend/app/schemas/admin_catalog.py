@@ -134,3 +134,30 @@ class CategoryOption(BaseModel):
     name: str
     path: str
     depth: int
+
+
+class ProductImportRowResult(BaseModel):
+    row: int
+    status: str  # created | updated | error
+    slug: str | None = None
+    message: str | None = None
+
+
+class ProductImportSummary(BaseModel):
+    total: int
+    created: int
+    updated: int
+    failed: int
+    results: list[ProductImportRowResult]
+
+
+class ProductBulkActionIn(BaseModel):
+    product_ids: list[int] = Field(min_length=1, max_length=500)
+    action: str = Field(pattern="^(activate|archive|delete)$")
+
+
+class ProductBulkActionResult(BaseModel):
+    action: str
+    requested: int
+    succeeded: int
+    failed: list[int]

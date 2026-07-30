@@ -44,8 +44,11 @@ as both a customer and an admin (§22). Audit logging (spec §22.6) is now real 
 every existing admin mutation — not a new feature bolted on separately, but threaded through the
 same product/order/user/coupon/CMS/support write paths already built in prior sessions — and feature
 flags (spec §28) have a working admin CRUD UI, both verified live in the browser with real before/
-after diffs and the correct admin-vs-super-admin permission split (§23). Running **natively on
-Windows** — no Docker/Redis/Celery/Elasticsearch (see §5/§6 below for why and what that changes).
+after diffs and the correct admin-vs-super-admin permission split (§23). Bulk product CSV import/
+export and bulk actions — the last remaining named Phase 4 admin item — are now built end-to-end
+too, with per-row validation errors on import verified live via a real file upload (§24). Running
+**natively on Windows** — no Docker/Redis/Celery/Elasticsearch (see §5/§6 below for why and what
+that changes).
 
 ---
 
@@ -2250,6 +2253,71 @@ spec §3.3's matrix, not just what the pytest case asserts in isolation.
 
 ---
 
+## 24. Bulk product CSV import/export and bulk actions (spec §10.8, §24.3 journey 7) ✅
+
+Closes the last remaining named Phase 4 admin item (spec §29: "product/variant/inventory
+management, **bulk import/export**") and spec §24.3's explicit E2E test scenario #7: "Bulk CSV
+import → validation errors surfaced per row → successful rows imported."
+
+### What was built
+
+`POST /admin/products/import` (CSV upload via `UploadFile`, added `python-multipart==0.0.32` to
+`requirements.txt` — FastAPI needs it for any multipart/form-data parsing and it wasn't installed
+yet, caught immediately since importing was the very first thing that would have exercised it),
+`GET /admin/products/export` (streams a CSV of the live catalogue), `POST /admin/products/bulk`
+(activate/archive/delete for a selected set of ids). All three audited through the same
+`AuditLogRepository` from §23 — import writes one `import_create`/`import_update` row per product,
+bulk actions write one `bulk_<action>` row per affected product, not one row for the whole batch,
+matching the same per-resource granularity every other audited mutation already uses.
+
+Each CSV row (`slug, title, brand, category, price, mrp, status`) is fully validated in Python
+*before* any database write for that row happens — unknown brand/category, non-numeric or
+`price > mrp`, missing title, or an invalid status all become a row-level error message, never a
+half-written product. The whole batch still shares one transaction (one `commit()` at the end), but
+"no partial row" and "no partial batch" are different guarantees, and only the first one is what
+spec §24.3's scenario actually asks for — a bad row shouldn't need to abort rows that already
+validated cleanly, and it doesn't.
+
+### Real bug avoided by design, not by discovery: route-ordering
+
+`GET /admin/products/{product_id}` has no explicit `:int` path converter — Starlette's router
+matches on generic string segments unless you write `{product_id:int}` in the path itself, and
+FastAPI's own int validation only runs *after* a route already matched. Registering
+`GET /admin/products/export` *after* the `{product_id}` route would have meant every export request
+got captured by `get_product(product_id="export")` first, then 422'd on int validation — a real,
+easy-to-miss trap that "first-registered-path-wins, not try-every-route-until-parameters-validate"
+sets for exactly this kind of literal-vs-parameter path collision. Registered `/products/export`,
+`/products/import`, and `/products/bulk` before the `{product_id}` routes and verified the ordering
+actually worked with a live curl call (`GET /admin/products/export` → real CSV, not a 422) before
+ever touching the frontend.
+
+### Verified
+
+**Backend**: 6 new pytest cases (`test_bulk_products.py`) — a single CSV import with one valid
+update, one valid create, and two different validation failures (unknown brand, price > mrp) in
+the same batch, asserting the exact partial-success counts and per-row messages; missing required
+columns rejected outright; permission gating; export returns real product data; bulk archive then
+delete on two real products, checked against their own audit trail; an unknown id in a bulk request
+correctly reported as failed without blocking the valid ones. Full suite: 78 → **84 passed**.
+
+**Frontend**: `ProductsListPage.tsx` gained row checkboxes + a bulk action bar (Activate/Archive/
+Delete, spec's own "BulkActionBar" admin component), an Import CSV button (hidden file input,
+per-row results panel with error messages surfaced), and an Export CSV button (blob download via
+`URL.createObjectURL`). `tsc -b`, `oxlint`, `vitest` (32/32) all clean.
+
+**Live in Chrome**, real dev-database, real file upload (not a mocked `File` object): uploaded an
+actual CSV with 3 rows — one valid new product, one unknown-brand row, one price-exceeds-mrp row —
+through the real hidden file input, and got back "Imported 3 rows: 1 created, 0 updated, 2 failed"
+with the exact two error messages rendered inline, and the new product genuinely appeared in the
+list (8,103 → 8,104 products). Selected products via the new checkboxes, bulk-archived them (status
+flipped live, toast confirmation, selection cleared), bulk-reactivated, then bulk-deleted the test
+product to clean up — confirmed every single one of these actions in `/admin/audit-logs` afterward,
+with the import's row showing the complete real snapshot (`mrp`, `price`, `title`, `status`,
+`brand_id`, `category_id`, `is_deleted`) and the bulk actions each showing their own correct
+`status`/`is_deleted` before/after diff.
+
+---
+
 ## Stack deviations from spec §5 (and why)
 
 | Spec says | Built instead | Why |
@@ -2327,7 +2395,10 @@ start uvicorn fresh rather than trusting the reloader.
 - CMS pages, banners, and the support ticket system are now built end-to-end — see §22. Audit
   logging (spec §22.6) is now real and retrofitted across every existing admin mutation (not just
   new ones going forward), and feature flags (spec §28) now have a working admin CRUD UI, both
-  gated correctly per spec §3.3's matrix — see §23. Test suite is now 78 backend / 32 frontend, all
-  green. Remaining never-built items: bulk product import/export, Elasticsearch/synonyms/semantic
-  search, MFA, Redis/Celery (so no async payment webhooks, no 30s feature-flag cache), Playwright
-  E2E, and an actual deployment target (still native-Windows dev only).
+  gated correctly per spec §3.3's matrix — see §23. Bulk product CSV import/export and bulk
+  activate/archive/delete actions are now built end-to-end too, verified with a real file upload
+  through the actual admin UI, not just a pytest fixture — see §24. This closes every named Phase 4
+  admin item from spec §29's roadmap. Test suite is now 84 backend / 32 frontend, all green.
+  Remaining never-built items: Elasticsearch/synonyms/semantic search, MFA, Redis/Celery (so no
+  async payment webhooks, no 30s feature-flag cache), Playwright E2E, and an actual deployment
+  target (still native-Windows dev only).

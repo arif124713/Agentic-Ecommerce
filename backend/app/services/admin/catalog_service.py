@@ -1,3 +1,7 @@
+import csv
+import io
+from decimal import Decimal, InvalidOperation
+
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 from ulid import ULID
@@ -18,11 +22,17 @@ from app.schemas.admin_catalog import (
     CategoryOption,
     InventoryAdjustIn,
     LowStockVariantOut,
+    ProductBulkActionIn,
+    ProductBulkActionResult,
+    ProductImportRowResult,
+    ProductImportSummary,
     ProductWriteIn,
     VariantOut,
     VariantWriteIn,
 )
 from app.services.discovery_service import StockAlertService
+
+IMPORT_REQUIRED_COLUMNS = {"title", "brand", "category", "price", "mrp"}
 
 logger = structlog.get_logger("blackcart.inventory")
 
@@ -310,6 +320,149 @@ class AdminCatalogService:
             )
             for v in variants
         ]
+
+    # -- bulk import/export/actions (spec §10.8, §24.3 E2E journey 7) ----------------------------
+
+    async def import_products_csv(self, csv_text: str, ctx: AuditContext) -> ProductImportSummary:
+        """spec §24.3 journey 7: "Bulk CSV import -> validation errors surfaced per row ->
+        successful rows imported." Each row is fully validated in Python *before* any DB write for
+        that row happens, so a bad row never leaves a half-written product behind — the whole batch
+        still shares one transaction (one `commit()` at the end), but "no partial row" and "no
+        partial batch" are different guarantees and only the first one matters for this feature."""
+        reader = csv.DictReader(io.StringIO(csv_text))
+        missing = IMPORT_REQUIRED_COLUMNS - set(reader.fieldnames or [])
+        if missing:
+            raise ConflictError(f"CSV is missing required columns: {', '.join(sorted(missing))}")
+
+        results: list[ProductImportRowResult] = []
+        for i, row in enumerate(reader, start=2):  # row 1 is the header
+            try:
+                is_update, slug = await self._import_row(row, ctx)
+                results.append(ProductImportRowResult(row=i, status="updated" if is_update else "created", slug=slug))
+            except ValueError as exc:
+                results.append(ProductImportRowResult(row=i, status="error", message=str(exc)))
+
+        await self.session.commit()
+        created = sum(1 for r in results if r.status == "created")
+        updated = sum(1 for r in results if r.status == "updated")
+        failed = sum(1 for r in results if r.status == "error")
+        return ProductImportSummary(total=len(results), created=created, updated=updated, failed=failed, results=results)
+
+    async def _import_row(self, row: dict[str, str], ctx: AuditContext) -> tuple[bool, str]:
+        """Returns (is_update, slug). Raises ValueError with a human-readable message on any
+        validation failure — never touches the session until every field for this row has
+        already passed."""
+        given_slug = (row.get("slug") or "").strip()
+        title = (row.get("title") or "").strip()
+        brand_name = (row.get("brand") or "").strip()
+        category_name = (row.get("category") or "").strip()
+        price_raw = (row.get("price") or "").strip()
+        mrp_raw = (row.get("mrp") or "").strip()
+        status = (row.get("status") or "draft").strip() or "draft"
+
+        if not title:
+            raise ValueError("title is required")
+        if not brand_name:
+            raise ValueError("brand is required")
+        if not category_name:
+            raise ValueError("category is required")
+        if status not in ("draft", "active", "archived"):
+            raise ValueError(f"invalid status '{status}' (must be draft, active, or archived)")
+
+        brand = await self.brands.get_by_name(brand_name)
+        if brand is None:
+            raise ValueError(f"unknown brand '{brand_name}'")
+        category = await self.categories.get_by_name(category_name)
+        if category is None:
+            raise ValueError(f"unknown category '{category_name}'")
+
+        try:
+            price = Decimal(price_raw)
+            mrp = Decimal(mrp_raw)
+        except InvalidOperation as exc:
+            raise ValueError("price and mrp must be valid numbers") from exc
+        if price <= 0 or mrp <= 0:
+            raise ValueError("price and mrp must be positive")
+        if price > mrp:
+            raise ValueError("price cannot exceed mrp")
+
+        existing = await self.products.get_by_slug(given_slug) if given_slug else None
+        if existing is not None:
+            before = self._product_snapshot(existing)
+            existing.title = title
+            existing.brand_id = brand.id
+            existing.category_id = category.id
+            existing.price = price
+            existing.mrp = mrp
+            existing.status = status
+            existing.search_keywords = title
+            self.audit.record(
+                ctx, action="import_update", resource_type="product", resource_id=existing.id,
+                before=to_json_safe(before), after=to_json_safe(self._product_snapshot(existing)),
+            )
+            return True, existing.slug
+
+        final_slug = given_slug or slugify(title)
+        if await self.products.slug_exists(final_slug):
+            final_slug = f"{final_slug}-{unique_suffix()}"
+        product = Product(
+            public_id=str(ULID()),
+            slug=final_slug,
+            title=title,
+            brand_id=brand.id,
+            category_id=category.id,
+            currency="INR",
+            mrp=mrp,
+            price=price,
+            status=status,
+            search_keywords=title,
+            published_at=utcnow() if status == "active" else None,
+            variants=[],
+            images=[],
+            attributes=[],
+        )
+        self.products.add(product)
+        await self.session.flush()
+        self.audit.record(
+            ctx, action="import_create", resource_type="product", resource_id=product.id,
+            before=None, after=to_json_safe(self._product_snapshot(product)),
+        )
+        return False, final_slug
+
+    async def export_products_csv(self) -> str:
+        products = await self.products.list_all_for_export()
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["id", "slug", "title", "brand", "category", "price", "mrp", "status", "stock_total"])
+        for p in products:
+            writer.writerow([p.id, p.slug, p.title, p.brand.name, p.category.name, p.price, p.mrp, p.status, p.stock_total])
+        return output.getvalue()
+
+    async def bulk_action(self, payload: ProductBulkActionIn, ctx: AuditContext) -> ProductBulkActionResult:
+        products = await self.products.get_many_by_ids(payload.product_ids)
+        found_ids = {p.id for p in products}
+        failed = [pid for pid in payload.product_ids if pid not in found_ids]
+
+        for product in products:
+            before = {"status": product.status, "is_deleted": product.deleted_at is not None}
+            if payload.action == "activate":
+                product.status = "active"
+                if product.published_at is None:
+                    product.published_at = utcnow()
+            elif payload.action == "archive":
+                product.status = "archived"
+            elif payload.action == "delete":
+                product.deleted_at = utcnow()
+            after = {"status": product.status, "is_deleted": product.deleted_at is not None}
+            self.audit.record(
+                ctx, action=f"bulk_{payload.action}", resource_type="product", resource_id=product.id,
+                before=before, after=after,
+            )
+
+        await self.session.commit()
+        return ProductBulkActionResult(
+            action=payload.action, requested=len(payload.product_ids), succeeded=len(products), failed=failed
+        )
 
     # -- lookups for the product form -----------------------------------------------------------
 

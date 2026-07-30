@@ -102,6 +102,28 @@ export interface CategoryOption {
   depth: number
 }
 
+export interface ProductImportRowResult {
+  row: number
+  status: 'created' | 'updated' | 'error'
+  slug: string | null
+  message: string | null
+}
+
+export interface ProductImportSummary {
+  total: number
+  created: number
+  updated: number
+  failed: number
+  results: ProductImportRowResult[]
+}
+
+export interface ProductBulkActionResult {
+  action: string
+  requested: number
+  succeeded: number
+  failed: number[]
+}
+
 export interface AdminOrderListItem {
   order_number: string
   customer_email: string

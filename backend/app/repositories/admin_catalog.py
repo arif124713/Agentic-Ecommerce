@@ -64,6 +64,24 @@ class AdminProductRepository:
         stmt = select(func.count()).where(Product.slug == slug)
         return (await self.session.execute(stmt)).scalar_one() > 0
 
+    async def get_by_slug(self, slug: str) -> Product | None:
+        stmt = select(Product).where(Product.slug == slug).options(
+            selectinload(Product.brand), selectinload(Product.category)
+        )
+        return (await self.session.execute(stmt)).scalar_one_or_none()
+
+    async def get_many_by_ids(self, product_ids: list[int]) -> list[Product]:
+        stmt = select(Product).where(Product.id.in_(product_ids))
+        return list((await self.session.execute(stmt)).scalars().all())
+
+    async def list_all_for_export(self) -> list[Product]:
+        stmt = (
+            select(Product)
+            .options(selectinload(Product.brand), selectinload(Product.category))
+            .order_by(Product.id)
+        )
+        return list((await self.session.execute(stmt)).scalars().all())
+
     async def get_variant_for_update(self, variant_id: int) -> ProductVariant | None:
         stmt = select(ProductVariant).where(ProductVariant.id == variant_id).with_for_update()
         return (await self.session.execute(stmt)).scalar_one_or_none()
@@ -105,6 +123,10 @@ class AdminCategoryRepository:
         stmt = select(Category).where(Category.deleted_at.is_(None)).order_by(Category.depth, Category.sort_order)
         return list((await self.session.execute(stmt)).scalars().all())
 
+    async def get_by_name(self, name: str) -> Category | None:
+        stmt = select(Category).where(func.lower(Category.name) == name.lower(), Category.deleted_at.is_(None))
+        return (await self.session.execute(stmt)).scalar_one_or_none()
+
 
 class AdminBrandRepository:
     def __init__(self, session: AsyncSession):
@@ -113,3 +135,7 @@ class AdminBrandRepository:
     async def list_all(self) -> list[Brand]:
         stmt = select(Brand).where(Brand.deleted_at.is_(None)).order_by(Brand.name)
         return list((await self.session.execute(stmt)).scalars().all())
+
+    async def get_by_name(self, name: str) -> Brand | None:
+        stmt = select(Brand).where(func.lower(Brand.name) == name.lower(), Brand.deleted_at.is_(None))
+        return (await self.session.execute(stmt)).scalar_one_or_none()

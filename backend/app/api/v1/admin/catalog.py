@@ -1,8 +1,10 @@
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, File, Query, Response, UploadFile
+from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, require
 from app.core.audit import AuditContext, get_audit_context
+from app.core.errors import ConflictError
 from app.models.auth import User
 from app.schemas.admin_catalog import (
     AdminProductDetail,
@@ -11,6 +13,9 @@ from app.schemas.admin_catalog import (
     CategoryOption,
     InventoryAdjustIn,
     LowStockVariantOut,
+    ProductBulkActionIn,
+    ProductBulkActionResult,
+    ProductImportSummary,
     ProductWriteIn,
     VariantOut,
     VariantWriteIn,
@@ -33,6 +38,49 @@ async def list_products(
     return await AdminCatalogService(db).list_products(
         q=q, status=status, category_id=category_id, page=page, per_page=per_page
     )
+
+
+# Registered before GET /products/{product_id}: that route's path parameter has no explicit
+# `:int` converter, so Starlette's router would otherwise match "/products/export" against it
+# first (as product_id="export") and 422 on int validation instead of ever reaching this handler —
+# first-registered-wins for path matching, not "try every route until parameters validate".
+@router.get("/products/export", response_class=PlainTextResponse)
+async def export_products(
+    db: AsyncSession = Depends(get_db), _user: User = Depends(require("catalog:product:write"))
+):
+    csv_text = await AdminCatalogService(db).export_products_csv()
+    return PlainTextResponse(
+        content=csv_text,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=products_export.csv"},
+    )
+
+
+@router.post("/products/import", response_model=ProductImportSummary)
+async def import_products(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(require("catalog:product:write")),
+    ctx: AuditContext = Depends(get_audit_context),
+):
+    if not file.filename or not file.filename.lower().endswith(".csv"):
+        raise ConflictError("Only .csv files are accepted.")
+    raw = await file.read()
+    try:
+        csv_text = raw.decode("utf-8-sig")  # -sig: tolerate a UTF-8 BOM from Excel-exported CSVs
+    except UnicodeDecodeError as exc:
+        raise ConflictError("File must be UTF-8 encoded text.") from exc
+    return await AdminCatalogService(db).import_products_csv(csv_text, ctx)
+
+
+@router.post("/products/bulk", response_model=ProductBulkActionResult)
+async def bulk_action(
+    payload: ProductBulkActionIn,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(require("catalog:product:write")),
+    ctx: AuditContext = Depends(get_audit_context),
+):
+    return await AdminCatalogService(db).bulk_action(payload, ctx)
 
 
 @router.get("/products/{product_id}", response_model=AdminProductDetail)

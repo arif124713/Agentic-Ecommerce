@@ -7,6 +7,8 @@ import type {
   BrandOption,
   CategoryOption,
   LowStockVariant,
+  ProductBulkActionResult,
+  ProductImportSummary,
   ProductInput,
   VariantInput,
 } from '@/types/admin'
@@ -84,5 +86,30 @@ export async function listBrandOptions(): Promise<BrandOption[]> {
 
 export async function listCategoryOptions(): Promise<CategoryOption[]> {
   const { data } = await apiClient.get<Envelope<CategoryOption[]>>('/admin/catalog-options/categories')
+  return data.data
+}
+
+export async function exportProductsCsv(): Promise<Blob> {
+  const { data } = await apiClient.get<Blob>('/admin/products/export', { responseType: 'blob' })
+  return data
+}
+
+export async function importProductsCsv(file: File): Promise<ProductImportSummary> {
+  const formData = new FormData()
+  formData.append('file', file)
+  const { data } = await apiClient.post<Envelope<ProductImportSummary>>('/admin/products/import', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+  return data.data
+}
+
+export async function bulkProductAction(
+  productIds: number[],
+  action: 'activate' | 'archive' | 'delete',
+): Promise<ProductBulkActionResult> {
+  const { data } = await apiClient.post<Envelope<ProductBulkActionResult>>('/admin/products/bulk', {
+    product_ids: productIds,
+    action,
+  })
   return data.data
 }

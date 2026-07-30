@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, require
+from app.core.audit import AuditContext, get_audit_context
 from app.models.auth import User
 from app.schemas.admin_catalog import (
     AdminProductDetail,
@@ -43,9 +44,12 @@ async def get_product(
 
 @router.post("/products", response_model=AdminProductDetail, status_code=201)
 async def create_product(
-    payload: ProductWriteIn, db: AsyncSession = Depends(get_db), _user: User = Depends(require("catalog:product:write"))
+    payload: ProductWriteIn,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(require("catalog:product:write")),
+    ctx: AuditContext = Depends(get_audit_context),
 ):
-    return await AdminCatalogService(db).create_product(payload)
+    return await AdminCatalogService(db).create_product(payload, ctx)
 
 
 @router.patch("/products/{product_id}", response_model=AdminProductDetail)
@@ -54,23 +58,30 @@ async def update_product(
     payload: ProductWriteIn,
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(require("catalog:product:write")),
+    ctx: AuditContext = Depends(get_audit_context),
 ):
-    return await AdminCatalogService(db).update_product(product_id, payload)
+    return await AdminCatalogService(db).update_product(product_id, payload, ctx)
 
 
 @router.delete("/products/{product_id}", status_code=204)
 async def delete_product(
-    product_id: int, db: AsyncSession = Depends(get_db), _user: User = Depends(require("catalog:product:delete"))
+    product_id: int,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(require("catalog:product:delete")),
+    ctx: AuditContext = Depends(get_audit_context),
 ):
-    await AdminCatalogService(db).soft_delete_product(product_id)
+    await AdminCatalogService(db).soft_delete_product(product_id, ctx)
     return Response(status_code=204)
 
 
 @router.post("/products/{product_id}/restore", response_model=AdminProductDetail)
 async def restore_product(
-    product_id: int, db: AsyncSession = Depends(get_db), _user: User = Depends(require("catalog:product:delete"))
+    product_id: int,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(require("catalog:product:delete")),
+    ctx: AuditContext = Depends(get_audit_context),
 ):
-    return await AdminCatalogService(db).restore_product(product_id)
+    return await AdminCatalogService(db).restore_product(product_id, ctx)
 
 
 @router.post("/products/{product_id}/variants", response_model=VariantOut, status_code=201)
@@ -79,8 +90,9 @@ async def add_variant(
     payload: VariantWriteIn,
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(require("catalog:product:write")),
+    ctx: AuditContext = Depends(get_audit_context),
 ):
-    return await AdminCatalogService(db).add_variant(product_id, payload)
+    return await AdminCatalogService(db).add_variant(product_id, payload, ctx)
 
 
 @router.patch("/variants/{variant_id}", response_model=VariantOut)
@@ -89,15 +101,19 @@ async def update_variant(
     payload: VariantWriteIn,
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(require("catalog:product:write")),
+    ctx: AuditContext = Depends(get_audit_context),
 ):
-    return await AdminCatalogService(db).update_variant(variant_id, payload)
+    return await AdminCatalogService(db).update_variant(variant_id, payload, ctx)
 
 
 @router.delete("/variants/{variant_id}", status_code=204)
 async def delete_variant(
-    variant_id: int, db: AsyncSession = Depends(get_db), _user: User = Depends(require("catalog:product:write"))
+    variant_id: int,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(require("catalog:product:write")),
+    ctx: AuditContext = Depends(get_audit_context),
 ):
-    await AdminCatalogService(db).delete_variant(variant_id)
+    await AdminCatalogService(db).delete_variant(variant_id, ctx)
     return Response(status_code=204)
 
 
@@ -107,8 +123,9 @@ async def adjust_inventory(
     payload: InventoryAdjustIn,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require("catalog:inventory:write")),
+    ctx: AuditContext = Depends(get_audit_context),
 ):
-    return await AdminCatalogService(db).adjust_inventory(variant_id, payload, user.id)
+    return await AdminCatalogService(db).adjust_inventory(variant_id, payload, user.id, ctx)
 
 
 @router.get("/inventory/low-stock", response_model=list[LowStockVariantOut])

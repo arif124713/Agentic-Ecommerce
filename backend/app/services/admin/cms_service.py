@@ -1,8 +1,10 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.audit import AuditContext
 from app.core.errors import ConflictError, NotFoundError
 from app.core.timeutil import utcnow
 from app.models.cms import Banner, CmsPage
+from app.repositories.audit import AuditLogRepository
 from app.repositories.cms import BannerRepository, CmsPageRepository
 from app.schemas.admin_cms import BannerAdminOut, BannerWriteIn, CmsPageAdminOut, CmsPageWriteIn
 
@@ -12,6 +14,7 @@ class AdminCmsService:
         self.session = session
         self.pages = CmsPageRepository(session)
         self.banners = BannerRepository(session)
+        self.audit = AuditLogRepository(session)
 
     # --- CMS pages ---
 
@@ -25,7 +28,7 @@ class AdminCmsService:
             raise NotFoundError("Page was not found.")
         return self._page_out(page)
 
-    async def create_page(self, payload: CmsPageWriteIn) -> CmsPageAdminOut:
+    async def create_page(self, payload: CmsPageWriteIn, ctx: AuditContext) -> CmsPageAdminOut:
         if await self.pages.get_by_slug(payload.slug) is not None:
             raise ConflictError(f"A page with slug '{payload.slug}' already exists.")
 
@@ -33,10 +36,15 @@ class AdminCmsService:
         published_at = utcnow() if data["status"] == "published" else None
         page = CmsPage(**data, published_at=published_at)
         self.pages.add(page)
+        await self.session.flush()
+        self.audit.record(
+            ctx, action="create", resource_type="cms_page", resource_id=page.id,
+            before=None, after=self._snapshot(page),
+        )
         await self.session.commit()
         return self._page_out(page)
 
-    async def update_page(self, page_id: int, payload: CmsPageWriteIn) -> CmsPageAdminOut:
+    async def update_page(self, page_id: int, payload: CmsPageWriteIn, ctx: AuditContext) -> CmsPageAdminOut:
         page = await self.pages.get_by_id(page_id)
         if page is None:
             raise NotFoundError("Page was not found.")
@@ -45,29 +53,46 @@ class AdminCmsService:
         if existing is not None and existing.id != page_id:
             raise ConflictError(f"A page with slug '{payload.slug}' already exists.")
 
+        before = self._snapshot(page)
         was_published = page.status == "published"
         for field, value in payload.model_dump().items():
             setattr(page, field, value)
         if page.status == "published" and not was_published:
             page.published_at = utcnow()
+        self.audit.record(
+            ctx, action="update", resource_type="cms_page", resource_id=page_id,
+            before=before, after=self._snapshot(page),
+        )
         await self.session.commit()
         return self._page_out(page)
 
-    async def delete_page(self, page_id: int) -> CmsPageAdminOut:
+    async def delete_page(self, page_id: int, ctx: AuditContext) -> CmsPageAdminOut:
         page = await self.pages.get_by_id(page_id)
         if page is None:
             raise NotFoundError("Page was not found.")
         page.deleted_at = utcnow()
+        self.audit.record(
+            ctx, action="delete", resource_type="cms_page", resource_id=page_id,
+            before={"is_deleted": False}, after={"is_deleted": True},
+        )
         await self.session.commit()
         return self._page_out(page)
 
-    async def restore_page(self, page_id: int) -> CmsPageAdminOut:
+    async def restore_page(self, page_id: int, ctx: AuditContext) -> CmsPageAdminOut:
         page = await self.pages.get_by_id(page_id)
         if page is None:
             raise NotFoundError("Page was not found.")
         page.deleted_at = None
+        self.audit.record(
+            ctx, action="restore", resource_type="cms_page", resource_id=page_id,
+            before={"is_deleted": True}, after={"is_deleted": False},
+        )
         await self.session.commit()
         return self._page_out(page)
+
+    @staticmethod
+    def _snapshot(page: CmsPage) -> dict:
+        return {"slug": page.slug, "title": page.title, "status": page.status}
 
     @staticmethod
     def _page_out(page: CmsPage) -> CmsPageAdminOut:
@@ -95,26 +120,44 @@ class AdminCmsService:
             raise NotFoundError("Banner was not found.")
         return BannerAdminOut.model_validate(banner)
 
-    async def create_banner(self, payload: BannerWriteIn) -> BannerAdminOut:
+    async def create_banner(self, payload: BannerWriteIn, ctx: AuditContext) -> BannerAdminOut:
         banner = Banner(**payload.model_dump())
         self.banners.add(banner)
+        await self.session.flush()
+        self.audit.record(
+            ctx, action="create", resource_type="banner", resource_id=banner.id,
+            before=None, after=self._banner_snapshot(banner),
+        )
         await self.session.commit()
         return BannerAdminOut.model_validate(banner)
 
-    async def update_banner(self, banner_id: int, payload: BannerWriteIn) -> BannerAdminOut:
+    async def update_banner(self, banner_id: int, payload: BannerWriteIn, ctx: AuditContext) -> BannerAdminOut:
         banner = await self.banners.get_by_id(banner_id)
         if banner is None:
             raise NotFoundError("Banner was not found.")
+        before = self._banner_snapshot(banner)
         for field, value in payload.model_dump().items():
             setattr(banner, field, value)
+        self.audit.record(
+            ctx, action="update", resource_type="banner", resource_id=banner_id,
+            before=before, after=self._banner_snapshot(banner),
+        )
         await self.session.commit()
         return BannerAdminOut.model_validate(banner)
 
-    async def delete_banner(self, banner_id: int) -> BannerAdminOut:
+    async def delete_banner(self, banner_id: int, ctx: AuditContext) -> BannerAdminOut:
         banner = await self.banners.get_by_id(banner_id)
         if banner is None:
             raise NotFoundError("Banner was not found.")
         banner.deleted_at = utcnow()
         banner.is_active = False
+        self.audit.record(
+            ctx, action="delete", resource_type="banner", resource_id=banner_id,
+            before={"is_active": True}, after={"is_active": False},
+        )
         await self.session.commit()
         return BannerAdminOut.model_validate(banner)
+
+    @staticmethod
+    def _banner_snapshot(banner: Banner) -> dict:
+        return {"placement": banner.placement, "title": banner.title, "is_active": banner.is_active}

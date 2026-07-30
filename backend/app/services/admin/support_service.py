@@ -2,10 +2,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.audit import AuditContext
 from app.core.errors import NotFoundError
 from app.core.timeutil import utcnow
 from app.models.auth import User
 from app.models.support import SupportTicket, TicketMessage
+from app.repositories.audit import AuditLogRepository
 from app.repositories.support import SupportTicketRepository
 from app.schemas.admin_support import AdminTicketListItemOut, AdminTicketOut, TicketAssignIn, TicketStatusIn
 from app.schemas.support import TicketMessageIn
@@ -20,6 +22,7 @@ class AdminSupportService:
     def __init__(self, session: AsyncSession):
         self.session = session
         self.tickets = SupportTicketRepository(session)
+        self.audit = AuditLogRepository(session)
 
     async def list_tickets(
         self, *, status: str | None, assignee_user_id: int | None, page: int, per_page: int
@@ -46,17 +49,27 @@ class AdminSupportService:
         ticket = await self._get_or_404(public_id, with_messages=True)
         return self._to_out(ticket)
 
-    async def assign_ticket(self, public_id: str, payload: TicketAssignIn) -> AdminTicketOut:
+    async def assign_ticket(self, public_id: str, payload: TicketAssignIn, ctx: AuditContext) -> AdminTicketOut:
         ticket = await self._get_or_404(public_id, with_messages=False)
+        before_assignee = ticket.assignee_user_id
         ticket.assignee_user_id = payload.assignee_user_id
         ticket.updated_at = utcnow()
+        self.audit.record(
+            ctx, action="assign", resource_type="support_ticket", resource_id=ticket.id,
+            before={"assignee_user_id": before_assignee}, after={"assignee_user_id": payload.assignee_user_id},
+        )
         await self.session.commit()
         return await self._reload_out(ticket.id)
 
-    async def update_status(self, public_id: str, payload: TicketStatusIn) -> AdminTicketOut:
+    async def update_status(self, public_id: str, payload: TicketStatusIn, ctx: AuditContext) -> AdminTicketOut:
         ticket = await self._get_or_404(public_id, with_messages=False)
+        before_status = ticket.status
         ticket.status = payload.status
         ticket.updated_at = utcnow()
+        self.audit.record(
+            ctx, action="update_status", resource_type="support_ticket", resource_id=ticket.id,
+            before={"status": before_status}, after={"status": payload.status},
+        )
         await self.session.commit()
         return await self._reload_out(ticket.id)
 

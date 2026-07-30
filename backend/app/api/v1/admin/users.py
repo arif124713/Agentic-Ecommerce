@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, require
+from app.core.audit import AuditContext, get_audit_context
 from app.models.auth import User
 from app.schemas.admin_user import AdminUserDetail, AdminUserListItem, AssignRoleIn, SuspendUserIn
 from app.services.admin.user_service import AdminUserService
@@ -32,8 +33,9 @@ async def assign_role(
     payload: AssignRoleIn,
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(require("iam:user:assign_role")),
+    ctx: AuditContext = Depends(get_audit_context),
 ):
-    return await AdminUserService(db).assign_role(public_id, payload.role_code)
+    return await AdminUserService(db).assign_role(public_id, payload.role_code, ctx)
 
 
 @router.delete("/{public_id}/roles/{role_code}", response_model=AdminUserDetail)
@@ -42,8 +44,9 @@ async def revoke_role(
     role_code: str,
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(require("iam:user:assign_role")),
+    ctx: AuditContext = Depends(get_audit_context),
 ):
-    return await AdminUserService(db).revoke_role(public_id, role_code)
+    return await AdminUserService(db).revoke_role(public_id, role_code, ctx)
 
 
 @router.post("/{public_id}/suspend", response_model=AdminUserDetail)
@@ -52,12 +55,16 @@ async def suspend_user(
     payload: SuspendUserIn,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require("iam:user:read")),
+    ctx: AuditContext = Depends(get_audit_context),
 ):
-    return await AdminUserService(db).suspend(public_id, actor_public_id=user.public_id, reason=payload.reason)
+    return await AdminUserService(db).suspend(public_id, actor_public_id=user.public_id, reason=payload.reason, ctx=ctx)
 
 
 @router.post("/{public_id}/reactivate", response_model=AdminUserDetail)
 async def reactivate_user(
-    public_id: str, db: AsyncSession = Depends(get_db), _user: User = Depends(require("iam:user:read"))
+    public_id: str,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(require("iam:user:read")),
+    ctx: AuditContext = Depends(get_audit_context),
 ):
-    return await AdminUserService(db).reactivate(public_id)
+    return await AdminUserService(db).reactivate(public_id, ctx)

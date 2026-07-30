@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, require
+from app.core.audit import AuditContext, get_audit_context
 from app.models.auth import User
 from app.schemas.admin_support import AdminTicketListItemOut, AdminTicketOut, TicketAssignIn, TicketStatusIn
 from app.schemas.support import TicketMessageIn
@@ -38,8 +39,9 @@ async def assign_ticket(
     payload: TicketAssignIn,
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(require("support:ticket:manage")),
+    ctx: AuditContext = Depends(get_audit_context),
 ):
-    return await AdminSupportService(db).assign_ticket(public_id, payload)
+    return await AdminSupportService(db).assign_ticket(public_id, payload, ctx)
 
 
 @router.post("/{public_id}/status", response_model=AdminTicketOut)
@@ -48,8 +50,9 @@ async def update_status(
     payload: TicketStatusIn,
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(require("support:ticket:manage")),
+    ctx: AuditContext = Depends(get_audit_context),
 ):
-    return await AdminSupportService(db).update_status(public_id, payload)
+    return await AdminSupportService(db).update_status(public_id, payload, ctx)
 
 
 @router.post("/{public_id}/messages", response_model=AdminTicketOut, status_code=201)

@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, require
+from app.core.audit import AuditContext, get_audit_context
 from app.models.auth import User
 from app.schemas.admin_cms import BannerAdminOut, BannerWriteIn, CmsPageAdminOut, CmsPageWriteIn
 from app.services.admin.cms_service import AdminCmsService
@@ -29,9 +30,12 @@ async def get_page(
 
 @router.post("/pages", response_model=CmsPageAdminOut, status_code=201)
 async def create_page(
-    payload: CmsPageWriteIn, db: AsyncSession = Depends(get_db), _user: User = Depends(require("cms:page:write"))
+    payload: CmsPageWriteIn,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(require("cms:page:write")),
+    ctx: AuditContext = Depends(get_audit_context),
 ):
-    return await AdminCmsService(db).create_page(payload)
+    return await AdminCmsService(db).create_page(payload, ctx)
 
 
 @router.patch("/pages/{page_id}", response_model=CmsPageAdminOut)
@@ -40,22 +44,29 @@ async def update_page(
     payload: CmsPageWriteIn,
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(require("cms:page:write")),
+    ctx: AuditContext = Depends(get_audit_context),
 ):
-    return await AdminCmsService(db).update_page(page_id, payload)
+    return await AdminCmsService(db).update_page(page_id, payload, ctx)
 
 
 @router.delete("/pages/{page_id}", response_model=CmsPageAdminOut)
 async def delete_page(
-    page_id: int, db: AsyncSession = Depends(get_db), _user: User = Depends(require("cms:page:write"))
+    page_id: int,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(require("cms:page:write")),
+    ctx: AuditContext = Depends(get_audit_context),
 ):
-    return await AdminCmsService(db).delete_page(page_id)
+    return await AdminCmsService(db).delete_page(page_id, ctx)
 
 
 @router.post("/pages/{page_id}/restore", response_model=CmsPageAdminOut)
 async def restore_page(
-    page_id: int, db: AsyncSession = Depends(get_db), _user: User = Depends(require("cms:page:write"))
+    page_id: int,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(require("cms:page:write")),
+    ctx: AuditContext = Depends(get_audit_context),
 ):
-    return await AdminCmsService(db).restore_page(page_id)
+    return await AdminCmsService(db).restore_page(page_id, ctx)
 
 
 @router.get("/banners", response_model=list[BannerAdminOut])
@@ -78,9 +89,12 @@ async def get_banner(
 
 @router.post("/banners", response_model=BannerAdminOut, status_code=201)
 async def create_banner(
-    payload: BannerWriteIn, db: AsyncSession = Depends(get_db), _user: User = Depends(require("cms:page:write"))
+    payload: BannerWriteIn,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(require("cms:page:write")),
+    ctx: AuditContext = Depends(get_audit_context),
 ):
-    return await AdminCmsService(db).create_banner(payload)
+    return await AdminCmsService(db).create_banner(payload, ctx)
 
 
 @router.patch("/banners/{banner_id}", response_model=BannerAdminOut)
@@ -89,12 +103,16 @@ async def update_banner(
     payload: BannerWriteIn,
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(require("cms:page:write")),
+    ctx: AuditContext = Depends(get_audit_context),
 ):
-    return await AdminCmsService(db).update_banner(banner_id, payload)
+    return await AdminCmsService(db).update_banner(banner_id, payload, ctx)
 
 
 @router.delete("/banners/{banner_id}", response_model=BannerAdminOut)
 async def delete_banner(
-    banner_id: int, db: AsyncSession = Depends(get_db), _user: User = Depends(require("cms:page:write"))
+    banner_id: int,
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(require("cms:page:write")),
+    ctx: AuditContext = Depends(get_audit_context),
 ):
-    return await AdminCmsService(db).delete_banner(banner_id)
+    return await AdminCmsService(db).delete_banner(banner_id, ctx)

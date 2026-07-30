@@ -12,6 +12,8 @@ const NAV_ITEMS = [
   { label: 'CMS Pages', to: '/admin/cms/pages' },
   { label: 'Banners', to: '/admin/cms/banners' },
   { label: 'Support', to: '/admin/support' },
+  { label: 'Audit Logs', to: '/admin/audit-logs' },
+  { label: 'Feature Flags', to: '/admin/feature-flags' },
 ]
 
 export function AdminLayout() {

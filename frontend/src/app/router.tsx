@@ -36,6 +36,8 @@ import { BannersListPage } from '@/pages/admin/BannersListPage'
 import { BannerFormPage } from '@/pages/admin/BannerFormPage'
 import { SupportQueuePage } from '@/pages/admin/SupportQueuePage'
 import { AdminTicketDetailPage } from '@/pages/admin/AdminTicketDetailPage'
+import { AuditLogsPage } from '@/pages/admin/AuditLogsPage'
+import { FeatureFlagsPage } from '@/pages/admin/FeatureFlagsPage'
 
 export const router = createBrowserRouter([
   {
@@ -143,6 +145,8 @@ export const router = createBrowserRouter([
       { path: 'cms/banners/:id', element: <BannerFormPage /> },
       { path: 'support', element: <SupportQueuePage /> },
       { path: 'support/:publicId', element: <AdminTicketDetailPage /> },
+      { path: 'audit-logs', element: <AuditLogsPage /> },
+      { path: 'feature-flags', element: <FeatureFlagsPage /> },
     ],
   },
 ])

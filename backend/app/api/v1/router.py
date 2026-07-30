@@ -2,10 +2,12 @@ from fastapi import APIRouter
 
 from app.api.v1.account import addresses
 from app.api.v1.account import support as account_support
+from app.api.v1.admin import audit as admin_audit
 from app.api.v1.admin import catalog as admin_catalog
 from app.api.v1.admin import cms as admin_cms
 from app.api.v1.admin import coupons as admin_coupons
 from app.api.v1.admin import dashboard as admin_dashboard
+from app.api.v1.admin import feature_flags as admin_feature_flags
 from app.api.v1.admin import orders as admin_orders
 from app.api.v1.admin import reviews as admin_reviews
 from app.api.v1.admin import support as admin_support
@@ -40,3 +42,5 @@ api_router.include_router(admin_dashboard.router)
 api_router.include_router(admin_reviews.router)
 api_router.include_router(admin_cms.router)
 api_router.include_router(admin_support.router)
+api_router.include_router(admin_audit.router)
+api_router.include_router(admin_feature_flags.router)

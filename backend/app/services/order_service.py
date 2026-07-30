@@ -3,6 +3,7 @@ from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.audit import AuditContext, to_json_safe
 from app.core.config import get_settings
 from app.core.errors import ConflictError, ItemUnavailableError, NotFoundError
 from app.core.payment import (
@@ -27,6 +28,7 @@ from app.models.commerce import (
     ShipmentEvent,
 )
 from app.repositories.address import AddressRepository
+from app.repositories.audit import AuditLogRepository
 from app.repositories.cart import CartRepository
 from app.repositories.order import OrderRepository, PaymentRepository, RefundRepository, ShipmentRepository
 from app.schemas.admin_order import AdminOrderListItem, RefundOut
@@ -90,6 +92,7 @@ class OrderService:
         self.refunds = RefundRepository(session)
         self.carts = CartRepository(session)
         self.addresses = AddressRepository(session)
+        self.audit = AuditLogRepository(session)
         self.provider = get_payment_provider()
 
     # -- shared pricing/line-building --------------------------------------------------------
@@ -598,11 +601,14 @@ class OrderService:
             raise NotFoundError("Order was not found.")
         return await self._to_detail(order)
 
-    async def admin_transition(self, order_number: str, to_status: str, reason: str | None) -> OrderDetailOut:
+    async def admin_transition(
+        self, order_number: str, to_status: str, reason: str | None, ctx: AuditContext
+    ) -> OrderDetailOut:
         order = await self.orders.get_by_order_number(order_number)
         if order is None:
             raise NotFoundError("Order was not found.")
 
+        before_status = order.status
         self._transition(order, to_status, actor_type="admin", reason=reason)
 
         if to_status == "cancelled":
@@ -619,11 +625,15 @@ class OrderService:
             order.fulfilment_status = "fulfilled" if to_status == "shipped" else "unfulfilled"
 
         order.updated_at = utcnow()
+        self.audit.record(
+            ctx, action="transition", resource_type="order", resource_id=order.id,
+            before={"status": before_status}, after={"status": to_status, "reason": reason},
+        )
         await self.session.commit()
         return await self._to_detail(await self.orders.get_by_id(order.id))
 
     async def issue_refund(
-        self, order_number: str, amount: Decimal, reason: str | None, actor_user_id: int
+        self, order_number: str, amount: Decimal, reason: str | None, actor_user_id: int, ctx: AuditContext
     ) -> RefundOut:
         order = await self.orders.get_by_order_number(order_number)
         if order is None:
@@ -637,6 +647,7 @@ class OrderService:
         if amount <= 0 or amount > remaining:
             raise ConflictError(f"Refund amount must be between 0 and {remaining}.")
 
+        before_refunded_total = order.refunded_total
         now = utcnow()
         refund = Refund(
             order_id=order.id,
@@ -653,6 +664,16 @@ class OrderService:
         order.refunded_total += amount
         order.payment_status = "refunded" if order.refunded_total >= order.paid_total else "partially_refunded"
         order.updated_at = now
+        self.audit.record(
+            ctx, action="refund", resource_type="order", resource_id=order.id,
+            before={"refunded_total": to_json_safe(before_refunded_total)},
+            after={
+                "refunded_total": to_json_safe(order.refunded_total),
+                "amount": to_json_safe(amount),
+                "reason": reason,
+                "transaction_id": refund.transaction_id,
+            },
+        )
         await self.session.commit()
         return RefundOut(
             transaction_id=refund.transaction_id,

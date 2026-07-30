@@ -2,11 +2,13 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 from ulid import ULID
 
+from app.core.audit import AuditContext, to_json_safe
 from app.core.errors import ConflictError, NotFoundError
 from app.core.slug import slugify, unique_suffix
 from app.core.timeutil import utcnow
 from app.models.catalog import InventoryMovement, Product, ProductVariant
 from app.repositories.admin_catalog import AdminBrandRepository, AdminCategoryRepository, AdminProductRepository
+from app.repositories.audit import AuditLogRepository
 from app.schemas.admin_catalog import (
     AdminProductDetail,
     AdminProductListItem,
@@ -31,6 +33,7 @@ class AdminCatalogService:
         self.products = AdminProductRepository(session)
         self.categories = AdminCategoryRepository(session)
         self.brands = AdminBrandRepository(session)
+        self.audit = AuditLogRepository(session)
 
     # -- products ------------------------------------------------------------------------------
 
@@ -74,7 +77,7 @@ class AdminCatalogService:
             raise NotFoundError("Product was not found.")
         return self._to_detail(product)
 
-    async def create_product(self, payload: ProductWriteIn) -> AdminProductDetail:
+    async def create_product(self, payload: ProductWriteIn, ctx: AuditContext) -> AdminProductDetail:
         base_slug = slugify(payload.title)
         slug = base_slug
         if await self.products.slug_exists(slug):
@@ -109,14 +112,20 @@ class AdminCatalogService:
             attributes=[],
         )
         self.products.add(product)
+        await self.session.flush()
+        self.audit.record(
+            ctx, action="create", resource_type="product", resource_id=product.id,
+            before=None, after=to_json_safe(self._product_snapshot(product)),
+        )
         await self.session.commit()
         return await self.get_product(product.id)
 
-    async def update_product(self, product_id: int, payload: ProductWriteIn) -> AdminProductDetail:
+    async def update_product(self, product_id: int, payload: ProductWriteIn, ctx: AuditContext) -> AdminProductDetail:
         product = await self.products.get_by_id(product_id)
         if product is None:
             raise NotFoundError("Product was not found.")
 
+        before = self._product_snapshot(product)
         was_active = product.status == "active"
         for field, value in payload.model_dump().items():
             setattr(product, field, value)
@@ -124,27 +133,39 @@ class AdminCatalogService:
             product.published_at = utcnow()
         product.search_keywords = f"{payload.title} {payload.subtitle or ''}".strip()
         product.version += 1
+        self.audit.record(
+            ctx, action="update", resource_type="product", resource_id=product_id,
+            before=to_json_safe(before), after=to_json_safe(self._product_snapshot(product)),
+        )
         await self.session.commit()
         return await self.get_product(product_id)
 
-    async def soft_delete_product(self, product_id: int) -> None:
+    async def soft_delete_product(self, product_id: int, ctx: AuditContext) -> None:
         product = await self.products.get_by_id(product_id)
         if product is None:
             raise NotFoundError("Product was not found.")
         product.deleted_at = utcnow()
+        self.audit.record(
+            ctx, action="delete", resource_type="product", resource_id=product_id,
+            before={"is_deleted": False}, after={"is_deleted": True},
+        )
         await self.session.commit()
 
-    async def restore_product(self, product_id: int) -> AdminProductDetail:
+    async def restore_product(self, product_id: int, ctx: AuditContext) -> AdminProductDetail:
         product = await self.products.get_by_id(product_id)
         if product is None:
             raise NotFoundError("Product was not found.")
         product.deleted_at = None
+        self.audit.record(
+            ctx, action="restore", resource_type="product", resource_id=product_id,
+            before={"is_deleted": True}, after={"is_deleted": False},
+        )
         await self.session.commit()
         return await self.get_product(product_id)
 
     # -- variants ------------------------------------------------------------------------------
 
-    async def add_variant(self, product_id: int, payload: VariantWriteIn) -> VariantOut:
+    async def add_variant(self, product_id: int, payload: VariantWriteIn, ctx: AuditContext) -> VariantOut:
         product = await self.products.get_by_id(product_id)
         if product is None:
             raise NotFoundError("Product was not found.")
@@ -175,14 +196,19 @@ class AdminCatalogService:
                 )
             )
         await self._recompute_stock_total(product_id)
+        self.audit.record(
+            ctx, action="create", resource_type="product_variant", resource_id=variant.id,
+            before=None, after=to_json_safe(self._variant_snapshot(variant)),
+        )
         await self.session.commit()
         return VariantOut.model_validate(variant)
 
-    async def update_variant(self, variant_id: int, payload: VariantWriteIn) -> VariantOut:
+    async def update_variant(self, variant_id: int, payload: VariantWriteIn, ctx: AuditContext) -> VariantOut:
         variant = await self.products.get_variant_for_update(variant_id)
         if variant is None:
             raise NotFoundError("Variant was not found.")
 
+        before = self._variant_snapshot(variant)
         stock_delta = payload.stock - variant.stock
         for field in ("sku", "size", "color", "color_hex", "mrp", "price", "low_stock_threshold", "is_active"):
             setattr(variant, field, getattr(payload, field))
@@ -201,21 +227,31 @@ class AdminCatalogService:
                 )
             )
         await self._recompute_stock_total(variant.product_id)
+        self.audit.record(
+            ctx, action="update", resource_type="product_variant", resource_id=variant_id,
+            before=to_json_safe(before), after=to_json_safe(self._variant_snapshot(variant)),
+        )
         await self.session.commit()
         return VariantOut.model_validate(variant)
 
-    async def delete_variant(self, variant_id: int) -> None:
+    async def delete_variant(self, variant_id: int, ctx: AuditContext) -> None:
         variant = await self.products.get_variant_for_update(variant_id)
         if variant is None:
             raise NotFoundError("Variant was not found.")
         variant.deleted_at = utcnow()
         variant.is_active = False
         await self._recompute_stock_total(variant.product_id)
+        self.audit.record(
+            ctx, action="delete", resource_type="product_variant", resource_id=variant_id,
+            before={"is_deleted": False}, after={"is_deleted": True},
+        )
         await self.session.commit()
 
     # -- inventory -----------------------------------------------------------------------------
 
-    async def adjust_inventory(self, variant_id: int, payload: InventoryAdjustIn, actor_user_id: int) -> VariantOut:
+    async def adjust_inventory(
+        self, variant_id: int, payload: InventoryAdjustIn, actor_user_id: int, ctx: AuditContext
+    ) -> VariantOut:
         variant = await self.products.get_variant_for_update(variant_id)
         if variant is None:
             raise NotFoundError("Variant was not found.")
@@ -224,6 +260,7 @@ class AdminCatalogService:
             raise ConflictError("This adjustment would take stock below zero.")
 
         was_available = variant.available > 0
+        before_stock = variant.stock
         variant.stock = new_stock
         self.products.add_movement(
             InventoryMovement(
@@ -237,6 +274,11 @@ class AdminCatalogService:
             )
         )
         await self._recompute_stock_total(variant.product_id)
+        self.audit.record(
+            ctx, action="adjust_inventory", resource_type="product_variant", resource_id=variant_id,
+            before={"stock": before_stock},
+            after={"stock": new_stock, "delta": payload.delta, "reason": payload.reason},
+        )
         await self.session.commit()
 
         if not was_available and variant.available > 0:
@@ -291,6 +333,32 @@ class AdminCatalogService:
         if product is None:
             return
         product.stock_total = sum(v.stock for v in product.variants if v.deleted_at is None)
+
+    @staticmethod
+    def _product_snapshot(product: Product) -> dict:
+        """Audit-log before/after snapshot (spec §22.6) — the fields worth diffing, not every
+        column; SEO/description text churn isn't the kind of change an audit trail needs to
+        reconstruct byte-for-byte."""
+        return {
+            "title": product.title,
+            "status": product.status,
+            "price": product.price,
+            "mrp": product.mrp,
+            "brand_id": product.brand_id,
+            "category_id": product.category_id,
+            "is_deleted": product.deleted_at is not None,
+        }
+
+    @staticmethod
+    def _variant_snapshot(variant: ProductVariant) -> dict:
+        return {
+            "sku": variant.sku,
+            "price": variant.price,
+            "mrp": variant.mrp,
+            "stock": variant.stock,
+            "is_active": variant.is_active,
+            "is_deleted": variant.deleted_at is not None,
+        }
 
     def _to_detail(self, product: Product) -> AdminProductDetail:
         return AdminProductDetail(

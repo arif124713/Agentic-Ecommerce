@@ -40,8 +40,12 @@ latency budget with room to spare (§19), and a real, actually-executed backup/r
 local MySQL passed with an exact row-count match (§20); operational runbooks now exist for this
 project's own recurring failure modes (§21). CMS pages, banners, and the support ticket system —
 previously entirely unbuilt — are now **end-to-end functional**, verified live through the browser
-as both a customer and an admin (§22). Running **natively on Windows** — no
-Docker/Redis/Celery/Elasticsearch (see §5/§6 below for why and what that changes).
+as both a customer and an admin (§22). Audit logging (spec §22.6) is now real and retrofitted across
+every existing admin mutation — not a new feature bolted on separately, but threaded through the
+same product/order/user/coupon/CMS/support write paths already built in prior sessions — and feature
+flags (spec §28) have a working admin CRUD UI, both verified live in the browser with real before/
+after diffs and the correct admin-vs-super-admin permission split (§23). Running **natively on
+Windows** — no Docker/Redis/Celery/Elasticsearch (see §5/§6 below for why and what that changes).
 
 ---
 
@@ -67,7 +71,7 @@ Docker/Redis/Celery/Elasticsearch (see §5/§6 below for why and what that chang
 | 19 | Responsive & accessibility | 🟡 | Breakpoints, touch targets, focus rings, reduced-motion in place; an axe-core sweep across 15+ pages found and fixed real heading-order and unlabeled-form-control issues (§13 below) — not a full WCAG audit |
 | 20 | SEO & structured data | 🟡 | sitemap.xml, robots.txt, per-page meta/OG tags, JSON-LD (Product/BreadcrumbList/Organization/WebSite/ItemList) — §13 below. No hreflang, no redirects table, no CI structured-data linting |
 | 21 | Observability | 🟡 | Structured logging (§1) plus a Prometheus `/metrics` endpoint (§13 below) exposing request rate/latency/status out of the box; no OpenTelemetry tracing, no Grafana dashboards/alerts — needs a collector/Grafana this setup doesn't have |
-| 22 | Security | 🟡 | Auth/IDOR/CSRF test suite (§12); security headers, an in-process rate limiter with 429+Retry-After, and two dependency audit rounds (§13: 4 packages + 1 fail-fast fix; §17: fastapi/starlette/pillow/pytest CVEs and the react-router CSRF-bypass range both closed, `pip-audit`/`npm audit` now zero) — §13/§17 below. No audit logging, no file-upload pipeline (no uploads exist yet), no gitleaks/SBOM, no pip-audit/npm-audit wired into CI yet (§15) |
+| 22 | Security | 🟡 | Auth/IDOR/CSRF test suite (§12); security headers, an in-process rate limiter with 429+Retry-After, and two dependency audit rounds (§13: 4 packages + 1 fail-fast fix; §17: fastapi/starlette/pillow/pytest CVEs and the react-router CSRF-bypass range both closed, `pip-audit`/`npm audit` now zero, both wired into CI as recurring gates alongside a gitleaks secret scan — §18) — §13/§17/§18 below. Full audit logging (§22.6) now built end-to-end across every admin mutation — §23 below. No SBOM, no file-upload pipeline (no uploads exist yet) |
 | 23 | Performance budgets | 🟡 | API p95 latency budget verified with a real k6 load test (§19: reads 91-123ms vs <200ms budget, writes 99-111ms vs <500ms budget, 0% errors) — see §19 below. Lighthouse/LCP/frontend performance budgets not measured yet |
 | 24 | Testing strategy | 🟡 | Real pytest (backend, 59 cases) + vitest (frontend, 32 cases) suites now exist covering the spec's flagged critical scenarios — full details in §12/§14 below; no Playwright E2E, load testing, or contract testing |
 | 25–26 | CI/CD, deployment | 🟡 | Git repo pushed to a real GitHub remote, Actions CI confirmed green on real runners (ruff/mypy/pytest+coverage/alembic/pip-audit gate for backend; tsc/oxlint/vitest/build/npm-audit gate for frontend; a separate gitleaks secret-scan job) — §15/§17/§18 below. A real, passing backup/restore drill against local MySQL now exists too — §20 below. No CD/deployment pipeline (nowhere to deploy to yet), branch protection needs manual GitHub setup (guidance in README) |
@@ -2167,6 +2171,85 @@ a problem that doesn't exist in the actual application.
 
 ---
 
+## 23. Audit logging and feature flags (spec §22.6, §28) ✅
+
+Closes Phase 4's own stated exit criterion (spec §29: "every mutation is audited") and two more
+items off the "never built at all" list: audit logging and feature flags. Both are System-area
+admin features gated by adjacent-but-distinct permissions (`system:audit_log:read` — admin +
+super_admin; `system:feature_flag:write` — super_admin only, the single strictest permission in
+spec §3.3's entire matrix), both already seeded in Phase 2 but unused until now.
+
+### Schema
+
+New `models/audit.py` (`AuditLog`) and `models/feature_flag.py` (`FeatureFlag`, primary-keyed by
+`key` per spec §28, not an autoincrement id — a flag is looked up by name, never enumerated by
+internal id). Migration `27cfdf5e6288_audit_log_and_feature_flags` — the recurring FK/index-drop-
+order fix applied proactively to `downgrade()` before ever running it, same as every migration
+before it; full `upgrade → downgrade → upgrade → check` cycle verified clean on the first attempt.
+
+`AuditLogRepository` (`repositories/audit.py`) is deliberately append-only: no `update`/`delete`
+method exists on it at all — the practical, application-layer equivalent of spec §22.6's "no
+UPDATE/DELETE grants on the table for the application DB user," since this dev setup has one shared
+DB user for every table and revoking grants at the database level would also block every other
+table that user needs to write.
+
+### The retrofit — every existing admin mutation, not just new ones
+
+The actual work here wasn't building the audit log table (a small, self-contained piece) — it was
+threading audit calls through **every mutation this project already had**, across five service
+files that had nothing to do with each other: `admin/catalog_service.py` (create/update/delete/
+restore product, add/update/delete variant, adjust inventory — 8 methods), `order_service.py`
+(admin transition, refund), `admin/user_service.py` (assign/revoke role, suspend, reactivate —
+role assignment is a named threat in spec §22.5, "privilege escalation... audit logged"),
+`admin/coupon_service.py` (create/update/deactivate), `admin/cms_service.py` (7 page/banner
+mutations), `admin/support_service.py` (assign, status change). Each method gained one new
+parameter (`ctx: AuditContext`, built once per request by a new `get_audit_context` FastAPI
+dependency in `core/audit.py` — actor id, role, IP, user-agent, request-id, all pulled from the
+same JWT/cookie/request-state sources `require()` and `RequestIDMiddleware` already populate) and
+one `self.audit.record(...)` call with a before/after snapshot dict, in the same transaction as its
+own `session.commit()`.
+
+**A real, project-consistent design decision**: SQLAlchemy's plain `JSON` column type (no custom
+serializer configured on this engine) calls `json.dumps` directly, which chokes on `Decimal` (every
+price/mrp field in this codebase) and `datetime`. Rather than hit that at the first product-price
+audit call, added `to_json_safe()` to `core/audit.py` — recursively converts `Decimal→str`,
+`datetime→isoformat` — and used it at every snapshot call site that touches money or timestamps.
+
+**Two real bugs caught before they ever ran, by tracing the code rather than assuming**:
+1. `SupportTicket` already has two FKs to `users` (`user_id`, `assignee_user_id`) from the CMS/
+   support session (§22). Adding `assignee: Mapped["User"] = relationship(...)` for the audit
+   retrofit's own use without an explicit `foreign_keys=` would have reproduced the exact
+   `AmbiguousForeignKeysError` documented in §8 for `user_roles`' `user_id`/`granted_by` pair —
+   recognized the shape upfront from that prior incident instead of hitting the crash fresh.
+2. `AdminSupportService.get_ticket()` called `_get_or_404(public_id)` — which defaulted to
+   `with_messages=False` — then immediately built an `AdminTicketOut` that reads `.messages`,
+   which would have crashed with `MissingGreenlet` the moment anyone actually opened a ticket's
+   detail view. Caught by reading the call chain end-to-end during the retrofit, not by running it
+   and waiting for the crash; made `with_messages` an explicit, deliberate argument at every call
+   site instead of trusting a default that happened to be wrong for this one caller.
+
+### Verified
+
+**Backend**: 7 new pytest cases (`test_audit.py`) — inventory adjustment writes the correct
+before/after stock diff, a product price update writes a correctly-diffed audit row, role grant
+*and* revoke both write rows (checked together, since a grant-only test wouldn't catch a copy-paste
+bug in revoke), the audit-log viewer 403s a plain customer, an `admin`-role user can read audit
+logs but is correctly 403'd on feature flags (the matrix's own admin/super_admin split, not just a
+made-up test), a super_admin can create and update a flag with the change reflected in its own
+audit trail, and duplicate flag keys are rejected. Full suite: 71 → **78 passed**.
+
+**Live in Chrome**, real dev-database mutations, not test-DB fixtures: deactivated a real coupon
+through the actual admin UI, then opened `/admin/audit-logs` and saw the exact row — correct actor
+(`#1 (customer,admin,super_admin)`), correct timestamp, correct `before`/`after` diff
+(`{"is_active":true}` → `{"is_active":false}`) — rendered live, not asserted only in a test. Created
+a real feature flag (`promo.flash_sale`, spec §28's own example) through the admin UI, toggled its
+`enabled` checkbox, confirmed the toggle persisted and produced a second correctly-diffed audit row.
+Confirmed the permission split live too: signed in as a promoted `admin` (not `super_admin`), the
+Feature Flags page's list request came back `403` while Audit Logs loaded fine — exactly matching
+spec §3.3's matrix, not just what the pytest case asserts in isolation.
+
+---
+
 ## Stack deviations from spec §5 (and why)
 
 | Spec says | Built instead | Why |
@@ -2241,3 +2324,10 @@ start uvicorn fresh rather than trusting the reloader.
   see §16. Product photos are self-hosted (JPEG + WebP + blurhash), not hotlinked from the source
   CDN. No automated tests for the image pipeline itself, no AVIF, no multiple responsive sizes, no
   frontend blurhash placeholder rendering yet — full list in §16.
+- CMS pages, banners, and the support ticket system are now built end-to-end — see §22. Audit
+  logging (spec §22.6) is now real and retrofitted across every existing admin mutation (not just
+  new ones going forward), and feature flags (spec §28) now have a working admin CRUD UI, both
+  gated correctly per spec §3.3's matrix — see §23. Test suite is now 78 backend / 32 frontend, all
+  green. Remaining never-built items: bulk product import/export, Elasticsearch/synonyms/semantic
+  search, MFA, Redis/Celery (so no async payment webhooks, no 30s feature-flag cache), Playwright
+  E2E, and an actual deployment target (still native-Windows dev only).

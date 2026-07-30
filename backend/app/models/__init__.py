@@ -1,4 +1,5 @@
 from app.db.base import Base
+from app.models.audit import AuditLog
 from app.models.auth import (
     EmailVerificationToken,
     LoginAttempt,
@@ -43,6 +44,7 @@ from app.models.discovery import (
     Wishlist,
     WishlistItem,
 )
+from app.models.feature_flag import FeatureFlag
 from app.models.review import Review
 from app.models.support import SupportTicket, TicketMessage
 
@@ -88,4 +90,6 @@ __all__ = [
     "Banner",
     "SupportTicket",
     "TicketMessage",
+    "AuditLog",
+    "FeatureFlag",
 ]

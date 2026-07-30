@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, require
+from app.core.audit import AuditContext, get_audit_context
 from app.models.auth import User
 from app.schemas.admin_order import AdminOrderListItem, RefundIn, RefundOut, TransitionOrderIn
 from app.schemas.order import OrderDetailOut
@@ -36,8 +37,9 @@ async def transition_order(
     payload: TransitionOrderIn,
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(require("order:order:transition")),
+    ctx: AuditContext = Depends(get_audit_context),
 ):
-    return await OrderService(db).admin_transition(order_number, payload.to_status, payload.reason)
+    return await OrderService(db).admin_transition(order_number, payload.to_status, payload.reason, ctx)
 
 
 @router.post("/{order_number}/refund", response_model=RefundOut)
@@ -46,5 +48,6 @@ async def refund_order(
     payload: RefundIn,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require("order:refund:issue")),
+    ctx: AuditContext = Depends(get_audit_context),
 ):
-    return await OrderService(db).issue_refund(order_number, payload.amount, payload.reason, user.id)
+    return await OrderService(db).issue_refund(order_number, payload.amount, payload.reason, user.id, ctx)

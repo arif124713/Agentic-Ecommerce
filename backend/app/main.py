@@ -54,8 +54,14 @@ app.add_middleware(
 
 register_exception_handlers(app)
 
-MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
-app.mount("/media", StaticFiles(directory=MEDIA_ROOT), name="media")
+# Only meaningful for the local storage backend — a Vercel serverless function's filesystem is
+# read-only outside /tmp, so both mkdir() and the StaticFiles mount (which requires its directory
+# to exist at construction time) would crash the app at cold start if attempted unconditionally.
+# Product images are served straight from Vercel Blob's own URLs when storage_backend is anything
+# else, so there's nothing for this mount to do there.
+if settings.storage_backend == "local":
+    MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
+    app.mount("/media", StaticFiles(directory=MEDIA_ROOT), name="media")
 
 app.include_router(operational_router)
 app.include_router(seo_router)

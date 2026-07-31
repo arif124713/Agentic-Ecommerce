@@ -9,7 +9,7 @@ from alembic import context
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.core.config import get_settings  # noqa: E402
+from app.core.config import get_mysql_ssl_connect_args, get_settings  # noqa: E402
 from app.models import Base  # noqa: E402  (imports all model modules for autogenerate)
 
 # this is the Alembic Config object, which provides
@@ -66,6 +66,7 @@ def run_migrations_online() -> None:
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args=get_mysql_ssl_connect_args(get_settings()),
     )
 
     with connectable.connect() as connection:

@@ -1,3 +1,4 @@
+import ssl
 from functools import lru_cache
 from pathlib import Path
 
@@ -42,11 +43,24 @@ class Settings(BaseSettings):
     mysql_host: str = Field(default="127.0.0.1", alias="MYSQL_HOST")
     mysql_port: int = Field(default=3306, alias="MYSQL_PORT")
     mysql_db: str = Field(default="blackcart", alias="MYSQL_DB")
+    # Managed MySQL providers (Aiven and similar) require TLS and reject plaintext connections
+    # outright — "DISABLED" (the native-Windows-dev default) skips SSL entirely; "REQUIRED" wraps
+    # the connection in an SSL context, optionally pinned to a specific CA (mysql_ssl_ca, the PEM
+    # content itself rather than a file path, since env vars are the only config channel on Vercel).
+    mysql_ssl_mode: str = Field(default="DISABLED", alias="MYSQL_SSL_MODE")
+    mysql_ssl_ca: str | None = Field(default=None, alias="MYSQL_SSL_CA")
 
     kaggle_api_key: str | None = Field(default=None, alias="kaggle_api_key")
 
     database_pool_size: int = Field(default=10, alias="DATABASE_POOL_SIZE")
     database_max_overflow: int = Field(default=5, alias="DATABASE_MAX_OVERFLOW")
+    # Managed MySQL providers commonly close idle connections well under an hour — recycling
+    # proactively avoids "MySQL server has gone away" on a connection pulled from the pool after
+    # sitting idle, the classic failure mode of a fixed pool talking to someone else's DB server.
+    database_pool_recycle_seconds: int = Field(default=280, alias="DATABASE_POOL_RECYCLE_SECONDS")
+
+    storage_backend: str = Field(default="local", alias="STORAGE_BACKEND")
+    blob_read_write_token: str | None = Field(default=None, alias="BLOB_READ_WRITE_TOKEN")
 
     cors_origins: str = Field(default="http://localhost:5173", alias="CORS_ORIGINS")
 
@@ -102,6 +116,21 @@ class Settings(BaseSettings):
     def cookie_secure(self) -> bool:
         """False in local dev so cookies still work over plain http://localhost."""
         return self.is_production
+
+
+def get_mysql_ssl_connect_args(settings: Settings) -> dict:
+    """`connect_args` for both the async (aiomysql) and sync (pymysql) engines — SSL params go
+    through DBAPI connect kwargs, not the connection URL, so both `db/session.py` and
+    `alembic/env.py` share this rather than each hand-rolling it. Managed providers like Aiven
+    typically sign their MySQL endpoint's certificate with a well-known CA, so the default system
+    trust store (`ssl.create_default_context()`) validates it without `mysql_ssl_ca`; that setting
+    exists for providers that hand out a private/self-signed CA instead."""
+    if settings.mysql_ssl_mode == "DISABLED":
+        return {}
+    ctx = ssl.create_default_context()
+    if settings.mysql_ssl_ca:
+        ctx.load_verify_locations(cadata=settings.mysql_ssl_ca)
+    return {"ssl": ctx}
 
 
 @lru_cache

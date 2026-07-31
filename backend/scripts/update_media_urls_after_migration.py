@@ -1,12 +1,12 @@
-"""Run once, after scripts/migrate_media_to_blob.py has fully finished: rewrites every stored
-media URL from the local dev prefix (http://<backend_base_url>/media/) to the new Vercel Blob
-store's public base URL.
+"""Run once, after scripts/migrate_media_to_storage.py has fully finished: rewrites every stored
+media URL from the local dev prefix (http://<backend_base_url>/media/) to the new remote storage
+backend's public base URL.
 
 Safe as a single bulk string-prefix replace rather than a per-row remap: the migration script
-uploads with `x-add-random-suffix: 0`, so every blob's pathname is identical to the local
-`relative_path` it was uploaded from — the only thing that changes is the domain in front of it.
+uploads every file under its own local `relative_path` unchanged, so the only thing that differs
+between the old and new URL is the domain in front of it.
 
-Run: python scripts/update_media_urls_after_migration.py https://<store>.public.blob.vercel-storage.com
+Run: python scripts/update_media_urls_after_migration.py <new_public_base_url>
 """
 
 import asyncio

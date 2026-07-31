@@ -27,8 +27,8 @@ backend/media/
 # Local DB backups (spec §26 — real dumps of local dev data, never a distributable artifact)
 backend/backups/
 
-# Resumability checkpoint for the one-time local-media -> Vercel Blob migration
-backend/scripts/.blob_migration_checkpoint.txt
+# Resumability checkpoint for the one-time local-media -> remote storage migration
+backend/scripts/.media_migration_checkpoint.txt
 
 # Editor/OS
 .vscode/

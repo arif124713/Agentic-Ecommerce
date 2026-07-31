@@ -62,6 +62,19 @@ class Settings(BaseSettings):
     storage_backend: str = Field(default="local", alias="STORAGE_BACKEND")
     blob_read_write_token: str | None = Field(default=None, alias="BLOB_READ_WRITE_TOKEN")
 
+    # Cloudflare R2 (S3-compatible) — chosen over Vercel Blob for the full media migration after
+    # Blob's Hobby-tier 2,000-operations/month cap turned out to be nowhere near this project's
+    # 75k+ files (done.MD has the full story). R2's free tier (10GB storage, 1M/10M class A/B ops)
+    # comfortably covers it.
+    r2_account_id: str | None = Field(default=None, alias="R2_ACCOUNT_ID")
+    r2_access_key_id: str | None = Field(default=None, alias="R2_ACCESS_KEY_ID")
+    r2_secret_access_key: str | None = Field(default=None, alias="R2_SECRET_ACCESS_KEY")
+    r2_bucket_name: str | None = Field(default=None, alias="R2_BUCKET_NAME")
+    # The bucket's public-read URL prefix — either an r2.dev subdomain (with public access enabled
+    # on the bucket) or a custom domain routed through Cloudflare. Not derivable from the account
+    # id/bucket name alone, unlike Vercel Blob's fixed per-store subdomain.
+    r2_public_base_url: str | None = Field(default=None, alias="R2_PUBLIC_BASE_URL")
+
     cors_origins: str = Field(default="http://localhost:5173", alias="CORS_ORIGINS")
 
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")

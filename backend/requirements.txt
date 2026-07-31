@@ -30,3 +30,4 @@ pillow==12.3.0
 blurhash==1.1.5
 numpy==2.2.6
 rapidfuzz==3.14.5
+boto3==1.43.61

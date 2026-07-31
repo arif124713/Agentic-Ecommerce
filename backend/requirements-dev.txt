@@ -1,0 +1,19 @@
+# Local dev, CI, and the data-ingestion pipeline need everything in requirements.txt (runtime)
+# plus these — the dev server (uvicorn), migrations (alembic + pymysql, the sync driver alembic
+# uses), the test/lint toolchain, and the image/brand-dedup pipeline's own dependencies (numpy,
+# Pillow, blurhash, rapidfuzz), none of which the deployed app itself ever imports.
+-r requirements.txt
+
+uvicorn[standard]==0.32.1
+alembic==1.14.0
+pymysql==1.1.1
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pytest-cov==7.1.0
+faker==33.1.0
+ruff==0.8.3
+mypy==1.14.1
+pillow==12.3.0
+blurhash==1.1.5
+numpy==2.2.6
+rapidfuzz==3.14.5

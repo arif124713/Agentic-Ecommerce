@@ -111,7 +111,8 @@ be committed.
   done.MD §18 for a real one it caught (and a second, self-inflicted one from done.MD's own prose).
 - **backend** job — spins up a real MySQL 8 service container, then runs `ruff`, `pytest`
   (with coverage) against a fresh `blackcart_test` database, `pip-audit` against
-  `requirements.txt` (0 known vulnerabilities is the gate, per spec §2.3), and a full
+  `requirements-dev.txt` (runtime deps plus the dev/tooling/ingestion-only ones — 0 known
+  vulnerabilities is the gate, per spec §2.3), and a full
   `alembic upgrade head → downgrade base → upgrade head → check` cycle against a second, separate
   empty database (`blackcart_ci`) — this is a genuine from-scratch migration test, which is what
   actually caught and fixed three latent migration-ordering bugs while this workflow was being built

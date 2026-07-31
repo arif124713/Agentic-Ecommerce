@@ -18,9 +18,9 @@ from app.api.v1.cart import router as cart
 from app.api.v1.discovery import router as discovery
 from app.api.v1.orders import router as orders
 from app.api.v1.payments import router as payments
-from app.api.v1.public import catalog
-from app.api.v1.public import cms
-from app.api.v1.public import reviews
+from app.api.v1.storefront import catalog
+from app.api.v1.storefront import cms
+from app.api.v1.storefront import reviews
 from app.api.v1.search import router as search
 from app.api.v1 import security
 

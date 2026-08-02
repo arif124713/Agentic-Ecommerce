@@ -71,7 +71,9 @@ class AdminProductRepository:
         return (await self.session.execute(stmt)).scalar_one_or_none()
 
     async def get_many_by_ids(self, product_ids: list[int]) -> list[Product]:
-        stmt = select(Product).where(Product.id.in_(product_ids))
+        stmt = select(Product).where(Product.id.in_(product_ids)).options(
+            selectinload(Product.brand), selectinload(Product.category), selectinload(Product.variants)
+        )
         return list((await self.session.execute(stmt)).scalars().all())
 
     async def list_all_for_export(self) -> list[Product]:

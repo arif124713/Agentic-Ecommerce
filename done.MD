@@ -2756,6 +2756,109 @@ background-style confirmation, without a task queue).
 
 ---
 
+## 29. Real search: Algolia, closing spec §14's last deferred piece ✅
+
+Spec §14.1 wants "Elasticsearch (preferred), MySQL fallback, both satisfying the same contract."
+Vercel's Marketplace has no plain Elasticsearch product — discovered by actually running `vercel
+integration discover --category searching` rather than assuming — so the real choice was Algolia
+(purpose-built product search, free tier, one-command Marketplace provisioning) vs. Amazon
+OpenSearch Serverless (the actual ES-API-compatible engine spec §14.2's index mapping was written
+against, but requires linking an AWS account and has no real free tier — a cost-risk none of this
+stack's other pieces have) vs. a separate manual Elasticsearch/Bonsai signup (closest to spec's
+literal design, but account creation this assistant can't do). Asked the user; Algolia won.
+
+### Provisioning
+
+`vercel integration add algolia/application` — same terms-acceptance gate as Upstash in §28
+(confirmed with the user before opening the browser to accept), then fully automatic: `ALGOLIA_APP_ID`
+/ `ALGOLIA_SEARCH_API_KEY` / `ALGOLIA_WRITE_API_KEY` injected into all three Vercel environments,
+no manual credential handling.
+
+### Design: product-level records, MySQL stays the source of truth
+
+Followed the Algolia data-modeling skill's decision points explicitly rather than skipping them:
+- **Record model**: product-level (one record per `Product` row), not variant-level — matches this
+  project's PLP/PDP UX (browsing shows products, not individual SKUs) and spec §14.2's own
+  array-typed `colors`/`sizes` fields, which only make sense as an aggregate-per-product shape.
+- **`objectID`**: the immutable product `id`, never a mutable field like slug or title.
+- **Category subtree filtering**: Algolia's `filters` syntax has no LIKE/prefix operator, so a
+  `category_paths` array field is denormalized at index time to every ancestor path of the
+  product's own category (computed from the existing materialised `Category.path` string, zero
+  extra queries) — filtering `category_paths:"/men"` then matches the category itself and every
+  descendant in one exact-match facet filter, the standard Algolia pattern for hierarchical nav.
+- **Algolia only decides which product IDs match and in what order** — the actual `Product` rows
+  (brand, category, images) are always re-fetched from MySQL for hydration. No second, Algolia-
+  shaped serialization path; `to_product_card()` and friends never know which backend answered.
+- **Only ever-active, non-deleted products are indexed at all** (matching the MySQL repository's
+  own `status='active' AND deleted_at IS NULL` filter) — a product leaving that state is *removed*
+  from the index, not indexed-and-filtered-at-query-time.
+
+### Deliberately scoped down (documented, not silent)
+
+- Algolia is only reached for the **q-given, default-sort** case (`sort in ("-popularity",
+  "relevance")`). Plain category/brand browsing with no search text stays on MySQL — already fast
+  and correct, and Algolia's network round-trip would be pure overhead for it. A search combined
+  with an explicit non-default sort (price/rating/newest) also stays on MySQL: Algolia's idiomatic
+  way to support alternate sort orders is per-sort *replica indices*, real infrastructure this pass
+  doesn't build.
+- Brand/category/popular-query autocomplete stay on their existing cheap MySQL LIKE queries — only
+  *product* suggestions route through Algolia, since that's specifically where its typo-tolerance
+  earns its keep; a second and third Algolia index for two short, near-exact lookup lists wouldn't.
+- `perm_ver` and the 30s feature-flag cache (both named as Redis-shaped in spec) still aren't on
+  Redis even though §28 gave this project real Redis — out of scope for this pass.
+
+### A real false-positive, caught by actually testing live queries — not by reading the settings
+
+`AlgoliaSearchBackend` uses the official `algoliasearch` v4 Python client (async by default, backed
+by `aiohttp` — matches the rest of this FastAPI app instead of blocking the event loop with sync
+HTTP). Two real bugs surfaced only by running live queries against the real, fully-populated
+8,103-product index rather than trusting the implementation from a read-through:
+
+1. `save_synonyms()` doesn't accept `wait_for_tasks` (unlike `save_objects`/`delete_objects`) —
+   `TypeError` on the very first `configure_index()` call. Fixed by using
+   `replace_existing_synonyms=True` instead, which is what that call actually needed.
+2. Searching `"nike"` returned unrelated jackets and track pants as the top autocomplete
+   suggestions. Investigated by comparing `typoTolerance: true` vs `false` responses (filtered
+   result counts only make logical sense as a subset of unfiltered ones with typo tolerance off —
+   confirming *filters* weren't the bug) and then by requesting highlighted `description` text:
+   `"nike"` was typo-matching `"nice"` inside the generic boilerplate filler nearly every product's
+   description shares ("...will be a nice addition to your closet..."), and — this catalogue
+   genuinely has no Nike products — nothing better existed to rank above that noise. The exact same
+   *class* of false positive this project already hit and fixed for MySQL's FULLTEXT ngram parser
+   (see `repositories/catalog.py`'s own comment on why plain `LIKE` replaced it). Fixed with one
+   index setting, `disableTypoToleranceOnAttributes: ["description"]` — typo tolerance stays on for
+   title/brand/category/search_keywords, where it's doing real work (`"shrit"` still correctly
+   finds `"shirt"`), and only description (already lowest-priority, `unordered()`, last in
+   `searchableAttributes`) loses its worst failure mode. Re-verified live after the fix: `"nike"`
+   correctly returns zero results instead of noise; `"shrit"` still returns real shirts.
+
+Also verified the write-sync path for real, not just by code review: fetched a live product,
+changed its title, called the same `sync_products_to_search()` every admin mutation path calls,
+and confirmed an immediate search for the new title found it (`wait_for_tasks=True` really does
+block until Algolia's indexing task completes) — then reverted the title and re-synced.
+
+### Write-side sync coverage
+
+Every admin catalogue mutation that can affect what's searchable now syncs to Algolia after its
+`session.commit()`: `create_product`, `update_product`, `soft_delete_product`/`restore_product`
+(delete/re-index respectively), `add_variant`/`update_variant`/`delete_variant`/`adjust_inventory`
+(colors/sizes/in_stock all derive from variants), and both bulk paths (`import_products_csv`,
+`bulk_action`) via a batched re-fetch-and-sync rather than one Algolia call per row. Every sync
+point re-fetches the product fresh from MySQL rather than reusing whatever ORM instance was already
+in scope — `session.commit()`'s default `expire_on_commit` means a pre-commit instance's loaded
+relationships can no longer be trusted without a new round-trip regardless.
+
+`scripts/reindex_algolia.py` (same Windows-asyncio-SSL-workaround pattern as
+`update_media_urls_after_migration.py`, since it's operator tooling that runs from a developer
+machine, not the deployed app) does the initial/full bulk index and is idempotent — safe to re-run
+if the index and MySQL ever drift.
+
+`SEARCH_BACKEND=algolia` set in Vercel production + preview; `SEARCH_BACKEND=mysql` (default)
+stays untouched for local dev and the test suite, so neither needs a live Algolia connection to
+run — all 111 backend tests pass unmodified.
+
+---
+
 ## Stack deviations from spec §5 (and why)
 
 | Spec says | Built instead | Why |

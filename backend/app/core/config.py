@@ -84,6 +84,16 @@ class Settings(BaseSettings):
     redis_rest_url: str | None = Field(default=None, alias="KV_REST_API_URL")
     redis_rest_token: str | None = Field(default=None, alias="KV_REST_API_TOKEN")
 
+    # Algolia (spec §14.1's "Elasticsearch preferred, MySQL fallback" contract — Vercel's
+    # Marketplace has no plain Elasticsearch, so Algolia fills the "real search engine" role;
+    # env var names are Vercel's own from `vercel integration add algolia/application`. "mysql"
+    # (default) keeps local dev/tests exactly as before — Algolia is only reached for the q-given,
+    # default-sort search path (see core/search_backend.py's own docstring for the exact scoping).
+    search_backend: str = Field(default="mysql", alias="SEARCH_BACKEND")
+    algolia_app_id: str | None = Field(default=None, alias="ALGOLIA_APP_ID")
+    algolia_write_api_key: str | None = Field(default=None, alias="ALGOLIA_WRITE_API_KEY")
+    algolia_search_api_key: str | None = Field(default=None, alias="ALGOLIA_SEARCH_API_KEY")
+
     cors_origins: str = Field(default="http://localhost:5173", alias="CORS_ORIGINS")
 
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")

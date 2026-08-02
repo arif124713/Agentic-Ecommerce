@@ -8,6 +8,7 @@ from ulid import ULID
 
 from app.core.audit import AuditContext, to_json_safe
 from app.core.errors import ConflictError, NotFoundError
+from app.core.search_backend import remove_products_from_search, sync_products_to_search
 from app.core.slug import slugify, unique_suffix
 from app.core.timeutil import utcnow
 from app.models.catalog import InventoryMovement, Product, ProductVariant
@@ -128,6 +129,7 @@ class AdminCatalogService:
             before=None, after=to_json_safe(self._product_snapshot(product)),
         )
         await self.session.commit()
+        await self._sync_search_index(product.id)
         return await self.get_product(product.id)
 
     async def update_product(self, product_id: int, payload: ProductWriteIn, ctx: AuditContext) -> AdminProductDetail:
@@ -148,6 +150,7 @@ class AdminCatalogService:
             before=to_json_safe(before), after=to_json_safe(self._product_snapshot(product)),
         )
         await self.session.commit()
+        await self._sync_search_index(product_id)
         return await self.get_product(product_id)
 
     async def soft_delete_product(self, product_id: int, ctx: AuditContext) -> None:
@@ -160,6 +163,7 @@ class AdminCatalogService:
             before={"is_deleted": False}, after={"is_deleted": True},
         )
         await self.session.commit()
+        await remove_products_from_search([product_id])
 
     async def restore_product(self, product_id: int, ctx: AuditContext) -> AdminProductDetail:
         product = await self.products.get_by_id(product_id)
@@ -171,6 +175,7 @@ class AdminCatalogService:
             before={"is_deleted": True}, after={"is_deleted": False},
         )
         await self.session.commit()
+        await self._sync_search_index(product_id)
         return await self.get_product(product_id)
 
     # -- variants ------------------------------------------------------------------------------
@@ -211,6 +216,7 @@ class AdminCatalogService:
             before=None, after=to_json_safe(self._variant_snapshot(variant)),
         )
         await self.session.commit()
+        await self._sync_search_index(product_id)
         return VariantOut.model_validate(variant)
 
     async def update_variant(self, variant_id: int, payload: VariantWriteIn, ctx: AuditContext) -> VariantOut:
@@ -242,20 +248,23 @@ class AdminCatalogService:
             before=to_json_safe(before), after=to_json_safe(self._variant_snapshot(variant)),
         )
         await self.session.commit()
+        await self._sync_search_index(variant.product_id)
         return VariantOut.model_validate(variant)
 
     async def delete_variant(self, variant_id: int, ctx: AuditContext) -> None:
         variant = await self.products.get_variant_for_update(variant_id)
         if variant is None:
             raise NotFoundError("Variant was not found.")
+        product_id = variant.product_id
         variant.deleted_at = utcnow()
         variant.is_active = False
-        await self._recompute_stock_total(variant.product_id)
+        await self._recompute_stock_total(product_id)
         self.audit.record(
             ctx, action="delete", resource_type="product_variant", resource_id=variant_id,
             before={"is_deleted": False}, after={"is_deleted": True},
         )
         await self.session.commit()
+        await self._sync_search_index(product_id)
 
     # -- inventory -----------------------------------------------------------------------------
 
@@ -290,6 +299,7 @@ class AdminCatalogService:
             after={"stock": new_stock, "delta": payload.delta, "reason": payload.reason},
         )
         await self.session.commit()
+        await self._sync_search_index(variant.product_id)
 
         if not was_available and variant.available > 0:
             # spec §9.8's StockReplenished event: notify anyone who asked for a back-in-stock
@@ -335,21 +345,24 @@ class AdminCatalogService:
             raise ConflictError(f"CSV is missing required columns: {', '.join(sorted(missing))}")
 
         results: list[ProductImportRowResult] = []
+        touched_ids: list[int] = []
         for i, row in enumerate(reader, start=2):  # row 1 is the header
             try:
-                is_update, slug = await self._import_row(row, ctx)
+                is_update, slug, product_id = await self._import_row(row, ctx)
                 results.append(ProductImportRowResult(row=i, status="updated" if is_update else "created", slug=slug))
+                touched_ids.append(product_id)
             except ValueError as exc:
                 results.append(ProductImportRowResult(row=i, status="error", message=str(exc)))
 
         await self.session.commit()
+        await self._sync_search_index_many(touched_ids)
         created = sum(1 for r in results if r.status == "created")
         updated = sum(1 for r in results if r.status == "updated")
         failed = sum(1 for r in results if r.status == "error")
         return ProductImportSummary(total=len(results), created=created, updated=updated, failed=failed, results=results)
 
-    async def _import_row(self, row: dict[str, str], ctx: AuditContext) -> tuple[bool, str]:
-        """Returns (is_update, slug). Raises ValueError with a human-readable message on any
+    async def _import_row(self, row: dict[str, str], ctx: AuditContext) -> tuple[bool, str, int]:
+        """Returns (is_update, slug, product_id). Raises ValueError with a human-readable message on any
         validation failure — never touches the session until every field for this row has
         already passed."""
         given_slug = (row.get("slug") or "").strip()
@@ -400,7 +413,7 @@ class AdminCatalogService:
                 ctx, action="import_update", resource_type="product", resource_id=existing.id,
                 before=to_json_safe(before), after=to_json_safe(self._product_snapshot(existing)),
             )
-            return True, existing.slug
+            return True, existing.slug, existing.id
 
         final_slug = given_slug or slugify(title)
         if await self.products.slug_exists(final_slug):
@@ -427,7 +440,7 @@ class AdminCatalogService:
             ctx, action="import_create", resource_type="product", resource_id=product.id,
             before=None, after=to_json_safe(self._product_snapshot(product)),
         )
-        return False, final_slug
+        return False, final_slug, product.id
 
     async def export_products_csv(self) -> str:
         products = await self.products.list_all_for_export()
@@ -460,6 +473,10 @@ class AdminCatalogService:
             )
 
         await self.session.commit()
+        if payload.action == "delete":
+            await remove_products_from_search([p.id for p in products])
+        else:
+            await self._sync_search_index_many([p.id for p in products])
         return ProductBulkActionResult(
             action=payload.action, requested=len(payload.product_ids), succeeded=len(products), failed=failed
         )
@@ -473,6 +490,21 @@ class AdminCatalogService:
         return [CategoryOption.model_validate(c) for c in await self.categories.list_all()]
 
     # -- internal --------------------------------------------------------------------------------
+
+    async def _sync_search_index(self, product_id: int) -> None:
+        """Re-fetches (fully eager-loaded, same as every other read here) rather than reusing
+        whatever `Product`/`ProductVariant` instance is already in scope at the call site — after
+        `session.commit()`, SQLAlchemy's default `expire_on_commit` means those instances' loaded
+        relationships can no longer be trusted without a fresh round-trip anyway."""
+        product = await self.products.get_by_id(product_id)
+        if product is not None:
+            await sync_products_to_search([product])
+
+    async def _sync_search_index_many(self, product_ids: list[int]) -> None:
+        if not product_ids:
+            return
+        products = await self.products.get_many_by_ids(product_ids)
+        await sync_products_to_search(products)
 
     async def _recompute_stock_total(self, product_id: int) -> None:
         # Flush first: get_by_id uses populate_existing=True (needed so its own eager-loaded

@@ -93,10 +93,12 @@ Docker isn't installed on this machine, so for now:
 - **Celery** — not wired up; conflicts with the Vercel deployment target anyway. Background work
   (async payment webhook, delivery simulation) runs via real signature-verified HTTP endpoints
   instead, not a task queue.
-- **Elasticsearch** — not wired up; storefront search is real relevance-ranked MySQL `LIKE` matching
-  with a broadened fallback, not the spec's ES/FULLTEXT approach (see done.MD §11 for why the
-  FULLTEXT ngram fallback was tried and abandoned).
-- No brand fuzzy-merge (rapidfuzz) — brands are deduped exactly (case-insensitive) only.
+- **Elasticsearch** — Vercel's Marketplace has no plain-ES product, so Algolia fills that role in
+  production (`SEARCH_BACKEND=algolia`, via `vercel integration add algolia/application`) for the
+  q-given default-sort search path; MySQL `LIKE` matching with a broadened fallback (done.MD §11)
+  is still what plain category browsing and local dev/tests use. See done.MD §29 for the full
+  writeup, including a real Algolia typo-tolerance false positive it caught and fixed.
+- Brand fuzzy-merge (rapidfuzz) is built — see done.MD §26.
 - **Support tickets, CMS/banners** — not started.
 
 ## Secrets

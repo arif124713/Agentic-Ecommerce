@@ -1,19 +1,32 @@
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
+from app.core.search_backend import get_search_backend
 from app.models.catalog import Brand, Category, Product
 from app.models.discovery import SearchQuery
 
 
 class SearchRepository:
     """Backs GET /search/suggest (spec §14.4): a single response with top products, brands,
-    categories, and popular past queries — all cheap, indexed LIKE queries since there's no
-    Elasticsearch completion suggester here (see done.MD stack deviations)."""
+    categories, and popular past queries. Product suggestions use Algolia when configured — its
+    typo-tolerance is exactly what an autocomplete-while-typing box benefits from most; brands/
+    categories/popular-queries stay on cheap MySQL LIKE queries regardless, since a second and
+    third Algolia index for those wouldn't add much over an exact-ish prefix match on a short list."""
 
     def __init__(self, session: AsyncSession):
         self.session = session
 
     async def suggest_products(self, q: str, limit: int = 5) -> list[Product]:
+        search_backend = get_search_backend()
+        if search_backend is not None:
+            ids = await search_backend.suggest_products(q, limit=limit)
+            if not ids:
+                return []
+            stmt = select(Product).where(Product.id.in_(ids)).options(selectinload(Product.brand))
+            rows = {p.id: p for p in (await self.session.execute(stmt)).scalars().all()}
+            return [rows[i] for i in ids if i in rows]
+
         like = f"%{q}%"
         stmt = (
             select(Product)

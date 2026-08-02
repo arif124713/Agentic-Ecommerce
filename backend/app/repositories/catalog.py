@@ -4,6 +4,7 @@ from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.search_backend import get_search_backend
 from app.models.catalog import Brand, Category, Product
 
 
@@ -84,6 +85,23 @@ class ProductRepository:
         category_filter = await self._category_subtree_filter(category_slug) if category_slug else None
         tokens = _tokens(q) if q else []
 
+        # Real search (Algolia), scoped to the common "search box, default relevance" case — see
+        # core/search_backend.py's docstring for exactly why non-default sorts stay on MySQL.
+        if q and sort in ("-popularity", "relevance"):
+            search_backend = get_search_backend()
+            if search_backend is not None:
+                return await self._list_products_via_search_backend(
+                    search_backend,
+                    category_slug=category_slug,
+                    brand_slugs=brand_slugs,
+                    price_min=price_min,
+                    price_max=price_max,
+                    gender=gender,
+                    q=q,
+                    page=page,
+                    per_page=per_page,
+                )
+
         async def run(*, require_all: bool) -> tuple[list[Product], int]:
             stmt = (
                 select(Product)
@@ -126,6 +144,45 @@ class ProductRepository:
             return products, total, False
 
         products, total = await run(require_all=False)
+        return products, total, False
+
+    async def _list_products_via_search_backend(
+        self,
+        search_backend,
+        *,
+        category_slug: str | None,
+        brand_slugs: list[str] | None,
+        price_min: Decimal | None,
+        price_max: Decimal | None,
+        gender: str | None,
+        q: str,
+        page: int,
+        per_page: int,
+    ) -> tuple[list[Product], int, bool]:
+        category_path = None
+        if category_slug:
+            path_stmt = select(Category.path).where(Category.slug == category_slug)
+            category_path = (await self.session.execute(path_stmt)).scalar_one_or_none()
+
+        ids, total = await search_backend.search_products(
+            q=q,
+            category_path=category_path,
+            brand_slugs=brand_slugs,
+            price_min=float(price_min) if price_min is not None else None,
+            price_max=float(price_max) if price_max is not None else None,
+            gender=gender,
+            page=page,
+            per_page=per_page,
+        )
+        if not ids:
+            return [], total, False
+
+        # Algolia decides which products and in what order; MySQL still hydrates the actual rows
+        # (brand relationship etc.) — re-sort by Algolia's ranking since IN(...) doesn't preserve
+        # the input order.
+        stmt = select(Product).where(Product.id.in_(ids)).options(selectinload(Product.brand))
+        rows = {p.id: p for p in (await self.session.execute(stmt)).scalars().all()}
+        products = [rows[i] for i in ids if i in rows]
         return products, total, False
 
     async def category_facets(self, category_slug: str | None) -> list[tuple[str, str, int, bool]]:

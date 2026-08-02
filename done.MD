@@ -2516,6 +2516,246 @@ independent stock-release path. Test data cleaned up afterward.
 
 ---
 
+## 27. An actual deployment target: Vercel + Aiven MySQL ✅
+
+Closes the last of the four "never built at all" items — this project runs somewhere besides a
+native-Windows dev machine now. Frontend on Vercel (static Vite build), backend on Vercel as a
+Python serverless function (FastAPI), a real managed MySQL instance on Aiven's free tier. Verified
+by actually registering a user, logging in, and hitting an RBAC-gated admin route against the live
+deployment — not just a green build.
+
+### Why this split, not "just deploy everything to Vercel"
+
+Vercel's marketplace has no native MySQL (Postgres via Neon only), and this backend is deeply
+MySQL-specific — `aiomysql`/`pymysql`, MySQL-flavoured migrations, `TRUNCATE`-based ingestion,
+MySQL's tz-naive-datetime quirk worked around explicitly since §9. Migrating the schema to Postgres
+to fit Vercel's own marketplace would have been a large, risky rewrite for its own sake. Aiven's
+free MySQL tier sidesteps that entirely — same database engine, zero migration/dialect work.
+
+Vercel auto-detected this as a **Services** monorepo on `vercel link` (`frontend` as Vite,
+`backend` with entrypoint `app.main:app`) and generated `vercel.json` rewrites routing `/api/*` to
+the backend on the same domain — the frontend's existing relative `/api/v1` base URL just worked,
+no CORS configuration needed at all.
+
+### Vercel Blob → Cloudflare R2 (a real capacity finding, not a guess)
+
+Local media (`backend/media/`, 75,716 files / 3.3GB) can't live on a serverless function's
+filesystem, so `core/storage.py`'s `StorageBackend` Protocol gained a `VercelBlobStorageBackend`
+(reverse-engineered from `@vercel/blob`'s own SDK source — no public raw-REST doc exists for Blob).
+Started migrating the full local media set to it — and after ~11,600 uploads (still under 10% of
+the total), the **entire Blob store got suspended**: Hobby tier's real cap is **2,000 Advanced
+Operations per month**, not just the 1,500/min rate limit the docs foreground — confirmed via the
+dashboard (`11.6k/2k`, "Limits reached") and via the API directly (`store_suspended`). A fresh store
+didn't help either — the cap is account-wide, not per-store (`vercel blob create-store` itself
+refused: "Cannot create another store when usage threshold limit is reached"). No migration
+strategy on Hobby-tier Blob could have finished this project's actual file count; this wasn't a bug
+to fix, it was the wrong provider for this volume. Added `CloudflareR2StorageBackend` (S3-compatible,
+plain `boto3`) alongside it — R2's free tier (10GB storage, 1M/10M class A/B ops) actually covers
+75,716 files — and `STORAGE_BACKEND` picks whichever is configured. The migration script
+(`migrate_media_to_storage.py`) was made provider-agnostic accordingly.
+
+### Two real bugs the migration script itself surfaced (session discipline: verify, don't assume)
+
+1. **Event loop freeze on a slow file read**: the first working version read each file's bytes
+   directly in the async coroutine before handing off to a worker thread for the upload — fine for
+   a normal local file, but this project's `media/` lives under a OneDrive-synced folder, where a
+   file can be a cloud-only placeholder that blocks for a long time on first read. One such file
+   froze every other "concurrent" upload, since the read wasn't actually off the event loop. Fixed
+   by moving the read onto the same worker thread as the upload, with every attempt wrapped in
+   `asyncio.wait_for` so a genuinely hung read gets abandoned and retried instead of stalling a
+   worker forever.
+2. **A stray duplicate-process race** from an earlier `nohup`-backgrounded attempt that was
+   mistakenly assumed dead (its log file just looked empty from stdout buffering) kept running
+   alongside a second, correctly-started attempt — both writing to the same checkpoint file,
+   producing genuine duplicate upload attempts. Caught by comparing the checkpoint file's raw line
+   count against its deduplicated (`set()`) count; harmless in outcome (Blob/R2 both overwrite the
+   same pathname idempotently) but a real process-hygiene lesson, not a hypothetical one.
+
+### Aiven MySQL — SSL wiring, and a genuine self-inflicted transcription bug
+
+`get_mysql_ssl_connect_args()` (`core/config.py`) builds `connect_args={"ssl": ctx}` shared between
+`db/session.py`'s async engine and `alembic/env.py`'s sync one, gated behind `MYSQL_SSL_MODE`
+(`DISABLED` locally, `REQUIRED` on Vercel) so local dev is untouched. `DATABASE_POOL_RECYCLE_SECONDS`
+(default 280s) proactively recycles pooled connections — a managed provider closing idle
+connections under a fixed pool's nose is a classic "MySQL server has gone away" trap. Pool
+size/overflow are tuned down via env vars for a serverless function's per-instance pool rather than
+one shared long-lived process's.
+
+The first several local connection attempts against the real Aiven service all failed with
+`CERTIFICATE_VERIFY_FAILED: self-signed certificate in certificate chain` — Aiven signs its MySQL
+endpoint with a **project-specific self-signed CA**, not a publicly-trusted one, so
+`ssl.create_default_context()` alone (the assumption baked into the original design, based on how
+*most* managed providers behave) can never validate it without the actual CA cert loaded via
+`load_verify_locations(cadata=...)`. Confirmed by testing directly against the service rather than
+guessing further. Separately, hand-retyping the ~2,600-character URL-encoded CA certificate across
+several bash invocations introduced a real duplicated character partway through — `cadata does not
+contain a certificate` — caught by decoding and line-by-line-length-checking the string rather than
+assuming the copy was faithful; fixed by clicking the dashboard's actual **Download** link and
+reading the resulting file directly, eliminating manual transcription from the loop entirely (the
+same fix was needed for the copies already saved to Vercel's env vars, which had inherited the same
+typo).
+
+### A genuine Windows-only false alarm, correctly ruled out rather than chased
+
+Every local `aiomysql` connection attempt against Aiven failed with `OSError: [WinError 87] The
+parameter is incorrect` inside `asyncio`'s Windows `ProactorEventLoop` — a known real limitation of
+Python's default Windows event loop combined with SSL sockets, unrelated to Aiven, this project's
+code, or the eventual Vercel deployment (Linux, no ProactorEventLoop). Confirmed by switching to
+`asyncio.WindowsSelectorEventLoopPolicy()` for local verification only — never a production code
+change — after which the real, underlying certificate error (above) surfaced cleanly. `alembic
+upgrade head` (sync `pymysql`, no asyncio involved) was never affected by this at all, which is what
+first pointed at the event loop rather than the database as the actual difference between the two
+tools' behaviour.
+
+### The actual deploy crash, and a real platform-naming trap
+
+The first successful *build* still crashed at runtime: `ModuleNotFoundError: No module named
+'app.api.v1.public'` — a module that exists, is tracked in git, and imports fine locally. First
+hypothesis (the build log's own "Bundle size (231.94 MB) exceeds the standard size; optimizing
+dependencies" line) turned out wrong: splitting `requirements.txt` into a runtime-only file and a
+new `requirements-dev.txt` (pytest/ruff/mypy/uvicorn/alembic/numpy/Pillow/blurhash/rapidfuzz, none
+of which `app/` itself ever imports — confirmed by grepping for their imports outside `scripts/`)
+cut the bundle by ~230MB and made zero difference to the crash. The real cause, confirmed by testing
+directly rather than assuming the first plausible story: **Vercel's build system reserves any
+directory literally named `public` for static assets**, the same convention several JS frameworks
+use, and silently drops it from the Python function bundle regardless of size or content. Renamed
+`app/api/v1/public/` → `app/api/v1/storefront/` (`git mv`, three import lines updated) — fixed on
+the next deploy. The `requirements.txt` split is still worth keeping (Vercel's own stated guidance
+is to only ship runtime deps), just wasn't itself the fix.
+
+### Verified live on the actual deployment, not just a green build
+
+Registered a real user (`201`), logged in and received a working session cookie (`200`, correct
+role), called `/auth/me` back with that cookie (`200`, correct email) — proving the whole
+cookie/JWT/RBAC chain works identically on Vercel — hit an RBAC-gated admin route without
+permission and got the correct `403`, and POSTed to the payment webhook endpoint with a deliberately
+invalid signature and got the correct `401` (spec's own signature-verification contract holding up
+under the real deployment, not just locally). The storefront's actual home page renders correctly
+end-to-end through the Vite build. All of this against the **real** Aiven MySQL instance — the
+first deploy where every layer of this stack, including its two newest infrastructure pieces
+(managed MySQL, managed object storage), is something other than "runs on this one Windows machine."
+
+### Known gaps / not yet done
+
+- **Still only a preview deployment** (`deploy/vercel-setup` branch) — production
+  (`ecommerce-2wn2e5fsg-*.vercel.app`) is still the very first, broken build from before the
+  `public`-rename fix. Promoting this branch to production is a deliberate next step, not done
+  automatically.
+- **No custom domain, no staging/production data separation** — Aiven's free tier is a single
+  database instance; preview and production environments currently point at the same one.
+- **Aiven's free tier auto-powers-off the database on inactivity** — a real outage risk for a "live"
+  site (discovered firsthand when the whole deployment went dark after some idle time; see §28's
+  writeup of the media-migration follow-up session). Upgrading Aiven's plan removes this; not done.
+- Elasticsearch remains explicitly deferred, per the user's own earlier choice. Redis is now real
+  for rate limiting (see §28) but not yet used for the `perm_ver` cache or the 30s feature-flag
+  cache — those still hit MySQL directly.
+- Cloudflare R2 media migration (mentioned as not-yet-run when this section was first written) is
+  now complete — see §28.
+
+---
+
+## 28. Finishing the R2 migration, and real Redis for rate limiting ✅
+
+Two follow-ups to §27's deployment: actually running the media migration that section's code only
+tested, and closing the last of the two intentionally-deferred infra pieces (Redis; Elasticsearch
+stays deferred).
+
+### The R2 media migration, actually run this time
+
+`migrate_media_to_storage.py` ran for real against all 75,716 local files — split across two runs
+(the first was deliberately stopped partway through at the user's request before a PC shutdown; the
+checkpoint file picked the second run up from file 8,471 with zero re-uploads, exactly as designed
+in §27). Total: **75,716 uploaded, 0 failed**, ~4,880s of actual upload time across both runs.
+
+Along the way, a real gap surfaced that had nothing to do with R2: **Aiven's production database
+had zero products in it.** The catalogue was only ever ingested into local MySQL; nothing had ever
+copied it to Aiven. `update_media_urls_after_migration.py` would have been a silent no-op against an
+empty table. Fixed by `mysqldump`ing just the catalogue tables (`brands`, `categories`, `products`,
+`product_variants`, `product_images`, `product_attributes` — deliberately **not** `users` or any
+order/cart/auth table, to avoid clobbering the real accounts already registered against the live
+site from earlier smoke testing) with `--no-create-info` (Aiven's schema already exists via
+Alembic), wrapped in `SET FOREIGN_KEY_CHECKS=0/1` for restore, and loading it into Aiven directly.
+8,104 products (and everything under them) went from "only ever existed on one Windows machine" to
+actually live.
+
+Running the URL-rewrite script against Aiven hit a real, separate problem: `getaddrinfo failed` —
+the hostname simply didn't resolve. Not a typo (double-checked against the Aiven console) — the
+**service itself was powered off**. Aiven's free tier auto-powers-off MySQL on inactivity, a real
+behaviour neither this project's code nor its docs had accounted for, and it explains why the
+"images not loading" complaint that kicked off this whole follow-up session wasn't just about
+missing R2 URLs — the live site's database had actually gone dark. Powered it back on via the
+console (a configuration action within the already-authenticated session, same category as creating
+the R2 bucket in §27 — not account creation), waited for it to leave "Rebuilding," and re-ran the
+script: **37,858 `product_images` rows rewritten**, 0 left on the old `127.0.0.1` prefix. Verified
+live — real product photos render on the homepage, confirmed both via a raw fetch of an R2 URL and
+via an actual `<img>` load returning real pixel dimensions, not just a 200 status.
+
+One more real bug, caught by the user rather than by any of the verification above: a leftover
+`TestCat-JWW4A3E8` test category (created 2026-07-31 during earlier manual admin-endpoint testing,
+sitting harmlessly in local dev's `categories` table) got swept into the mysqldump above along with
+the real catalogue — nothing filtered it out — and it rode along into production, where it then
+showed up as a real top-level nav item and hero CTA on the live storefront. Confirmed zero products
+or subcategories under it in both databases, then deleted it from both. A reminder that "dump
+everything in these tables" and "dump everything *legitimate* in these tables" aren't the same
+operation without an explicit filter.
+
+**This deployment now has a standing operational risk worth flagging plainly**: Aiven's free-tier
+auto-power-off will keep happening. Nothing in this stack currently pings the database on a
+schedule to keep it warm, and there's no alerting if it goes down. Upgrading Aiven's plan removes
+the behaviour entirely; that decision hasn't been made yet.
+
+### Real Redis, finally — Upstash via the Vercel Marketplace
+
+The rate limiter's docstring has said the same thing since §13: spec §10.7 wants a Redis-backed
+counter shared across every worker; what existed was a plain in-process `dict`, correct on a single
+machine, silently wrong (under-counting, allowing more requests than the stated limit) the moment
+more than one process shares the job — which is exactly Vercel's serverless model, where multiple
+function instances can run concurrently. That gap is now closed.
+
+Provisioned via `vercel integration add upstash/upstash-kv` (Vercel's Marketplace-native path per
+the vercel-storage skill's stated preference over a manual Upstash signup) — this auto-created the
+Redis instance, connected it to all three environments (production/preview/development), and
+injected `KV_REST_API_URL` / `KV_REST_API_TOKEN` / `KV_URL` / `REDIS_URL` as real Vercel env vars,
+no manual credential handling needed at all. The one step that *did* need explicit sign-off: Vercel
+CLI's non-interactive install stalled on `integration_terms_acceptance_required` (Upstash's EULA +
+Vercel's marketplace addendum) — accepting third-party terms is exactly the kind of action this
+project's operating rules require asking about first, so it was surfaced and confirmed before
+opening the browser to accept.
+
+**Why REST, not a TCP Redis client**: the same reasoning as Aiven's SSL/pool-recycle work in
+§27 — a Vercel serverless function is a poor fit for a library that wants a long-lived persistent
+socket. Upstash's REST API (plain HTTP, `httpx`, already a runtime dependency — no new package
+added) sidesteps that entirely, the same way `VercelBlobStorageBackend` used raw REST instead of an
+SDK in §27.
+
+`core/rate_limit.py` now has two backends behind one interface, selected by `RATE_LIMIT_BACKEND`
+(mirrors the existing `STORAGE_BACKEND` pattern):
+- `"memory"` (default) — the original in-process fixed-window `dict`, kept as-is so local dev and
+  the test suite never need a live Redis connection to run.
+- `"redis"` — set in Vercel's production and preview env vars only. Each check is one Upstash REST
+  `/pipeline` call running `INCR` (atomic counter), `EXPIRE ... NX` (arms the window only on the
+  *first* hit — a bare `EXPIRE` every call would keep sliding the window forward and it would never
+  reset), and `TTL` (the exact seconds remaining, for a precise `Retry-After` instead of a fixed
+  window-length guess). Fails **open**, not closed: if Upstash is unreachable, the request is
+  allowed through rather than the whole API going down over a rate-limiter dependency being
+  unavailable — logged via the existing structlog setup so a persistent outage is still visible,
+  not silently swallowed.
+
+Verified twice: the existing `test_rate_limit.py` suite (unmodified, runs against the `"memory"`
+backend) still passes, and a one-off script drove `_check_redis` directly against the real
+provisioned Upstash instance — 3 requests allowed under a limit of 3, the 4th and 5th correctly
+blocked with an accurate, shrinking `Retry-After`. Full backend suite: 111 passed.
+
+### Still not using Redis
+
+The `perm_ver` cache and the 30-second feature-flag cache (both named in spec as Redis-shaped
+caches) still hit MySQL directly — only rate limiting was in scope for this pass. Sessions-as-cache
+and Celery/background-job infrastructure remain not built, per the user's own earlier, still-current
+choice (the async payment webhook already covers the one place this project actually needed
+background-style confirmation, without a task queue).
+
+---
+
 ## Stack deviations from spec §5 (and why)
 
 | Spec says | Built instead | Why |

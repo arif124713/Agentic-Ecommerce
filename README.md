@@ -86,9 +86,13 @@ allow `/media/*` cross-origin).
 
 The full spec assumes Docker Compose orchestrating MySQL, Redis, Elasticsearch, MinIO, and Celery.
 Docker isn't installed on this machine, so for now:
-- **Redis / Celery** — not wired up. Rate limiting, sessions-as-cache, and background jobs (email,
-  invoices, delivery simulation) aren't implemented yet. When ready, install Docker or Redis natively
-  and this is the next thing to build.
+- **Redis** — rate limiting now runs on real Upstash Redis in production (`RATE_LIMIT_BACKEND=redis`,
+  via `vercel integration add upstash/upstash-kv`; REST-based, no persistent connection needed on
+  Vercel's serverless functions). Local dev/tests still default to the original in-process counter
+  (`RATE_LIMIT_BACKEND=memory`) so neither needs a live Redis. Sessions-as-cache is not implemented.
+- **Celery** — not wired up; conflicts with the Vercel deployment target anyway. Background work
+  (async payment webhook, delivery simulation) runs via real signature-verified HTTP endpoints
+  instead, not a task queue.
 - **Elasticsearch** — not wired up; storefront search is real relevance-ranked MySQL `LIKE` matching
   with a broadened fallback, not the spec's ES/FULLTEXT approach (see done.MD §11 for why the
   FULLTEXT ngram fallback was tried and abandoned).

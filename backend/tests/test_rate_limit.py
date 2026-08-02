@@ -1,5 +1,6 @@
-"""In-process rate limiting (spec §10.7/§22.1). See core/rate_limit.py's docstring for why this
-is a plain in-memory counter rather than the Redis-backed one the spec describes."""
+"""Rate limiting (spec §10.7/§22.1). Exercises the in-process "memory" backend — the default for
+local dev and this test suite — not the Redis backend, which needs a live Upstash instance and is
+what production actually runs (`RATE_LIMIT_BACKEND=redis`; see core/rate_limit.py's docstring)."""
 
 from tests.conftest import unique_email
 

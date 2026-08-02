@@ -75,6 +75,15 @@ class Settings(BaseSettings):
     # id/bucket name alone, unlike Vercel Blob's fixed per-store subdomain.
     r2_public_base_url: str | None = Field(default=None, alias="R2_PUBLIC_BASE_URL")
 
+    # Upstash Redis (REST API, not a TCP connection — fits Vercel's serverless functions the same
+    # way the DB/storage backends above needed to). "memory" (the original in-process fixed-window
+    # counter) stays the default so local dev/tests never need Redis; Vercel env vars set this to
+    # "redis". Env var names (KV_REST_API_*) are Vercel's own from `vercel integration add
+    # upstash/upstash-kv` — not renamed, so `vercel env pull` keeps working without a mapping step.
+    rate_limit_backend: str = Field(default="memory", alias="RATE_LIMIT_BACKEND")
+    redis_rest_url: str | None = Field(default=None, alias="KV_REST_API_URL")
+    redis_rest_token: str | None = Field(default=None, alias="KV_REST_API_TOKEN")
+
     cors_origins: str = Field(default="http://localhost:5173", alias="CORS_ORIGINS")
 
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")

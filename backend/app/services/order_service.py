@@ -212,9 +212,10 @@ class OrderService:
             raise NotFoundError("Shipping address was not found.")
         billing_address = shipping_address
         if payload.billing_address_id is not None:
-            billing_address = await self.addresses.get_for_user(payload.billing_address_id, user.id)
-            if billing_address is None:
+            maybe_billing_address = await self.addresses.get_for_user(payload.billing_address_id, user.id)
+            if maybe_billing_address is None:
                 raise NotFoundError("Billing address was not found.")
+            billing_address = maybe_billing_address
 
         # Lock every distinct variant row (ordered by id) before trusting availability, so two
         # concurrent checkouts against the same low-stock variant can't both succeed (spec §9.4).
@@ -338,7 +339,7 @@ class OrderService:
             cart.converted_order_id = order.id
             order.updated_at = utcnow()
             await self.session.commit()
-            return await self._to_detail(await self.orders.get_by_id(order.id))
+            return await self._to_detail(await self._get_order_or_raise(order.id))
 
         # Card: create the payment intent in PROCESSING (spec §12.4) and commit so it's durable —
         # the webhook call below is a genuinely separate signature-verified HTTP request/response
@@ -360,7 +361,7 @@ class OrderService:
         await self.session.commit()
 
         await self._settle_card_payment_via_webhook(order_id=order.id, result=result)
-        return await self._to_detail(await self.orders.get_by_id(order.id))
+        return await self._to_detail(await self._get_order_or_raise(order.id))
 
     async def _settle_card_payment_via_webhook(self, *, order_id: int, result: PaymentResult) -> None:
         """Builds and posts a real HMAC-signed webhook event to this same app's own
@@ -438,7 +439,7 @@ class OrderService:
             await self.session.commit()
             return
 
-        order = await self.orders.get_by_id(payment.order_id)
+        order = await self._get_order_or_raise(payment.order_id)
 
         if event.status == "succeeded":
             payment.status = "succeeded"
@@ -585,6 +586,16 @@ class OrderService:
         if changed:
             await self.session.commit()
 
+    async def _get_order_or_raise(self, order_id: int) -> Order:
+        """The handful of call sites using this all re-fetch an order this same code path just
+        created or already confirmed exists (by id, by FK) — never expected to actually miss, but
+        `OrderRepository.get_by_id` is typed `Order | None` regardless, so this is the one place
+        that narrows it rather than repeating the same not-actually-optional check everywhere."""
+        order = await self.orders.get_by_id(order_id)
+        if order is None:
+            raise NotFoundError(f"Order {order_id} was not found.")
+        return order
+
     # -- read models ----------------------------------------------------------------------------
 
     async def _to_detail(self, order: Order) -> OrderDetailOut:
@@ -708,7 +719,7 @@ class OrderService:
         order.cancel_reason = reason
         order.updated_at = now
         await self.session.commit()
-        return await self._to_detail(await self.orders.get_by_id(order.id))
+        return await self._to_detail(await self._get_order_or_raise(order.id))
 
     # -- admin operations -------------------------------------------------------------------------
 
@@ -766,7 +777,7 @@ class OrderService:
             before={"status": before_status}, after={"status": to_status, "reason": reason},
         )
         await self.session.commit()
-        return await self._to_detail(await self.orders.get_by_id(order.id))
+        return await self._to_detail(await self._get_order_or_raise(order.id))
 
     async def issue_refund(
         self, order_number: str, amount: Decimal, reason: str | None, actor_user_id: int, ctx: AuditContext

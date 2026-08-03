@@ -57,11 +57,11 @@ def _resize(img: Image.Image, max_dim: int) -> Image.Image:
         return img
     ratio = max_dim / max(img.size)
     new_size = (max(1, round(img.width * ratio)), max(1, round(img.height * ratio)))
-    return img.resize(new_size, Image.LANCZOS)
+    return img.resize(new_size, Image.Resampling.LANCZOS)
 
 
 def _compute_blurhash(img: Image.Image) -> str:
-    small = img.resize((BLURHASH_SAMPLE_DIM, BLURHASH_SAMPLE_DIM), Image.LANCZOS)
+    small = img.resize((BLURHASH_SAMPLE_DIM, BLURHASH_SAMPLE_DIM), Image.Resampling.LANCZOS)
     arr = np.array(small)
     return blurhash.encode(arr, components_x=BLURHASH_COMPONENTS_X, components_y=BLURHASH_COMPONENTS_Y)
 

@@ -1,5 +1,6 @@
 import datetime
 import decimal
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     CHAR,
@@ -18,6 +19,9 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, SoftDeleteMixin, TimestampMixin
+
+if TYPE_CHECKING:
+    from app.models.catalog import ProductVariant
 
 
 class Address(Base, TimestampMixin, SoftDeleteMixin):
@@ -74,7 +78,7 @@ class CartItem(Base):
     updated_at: Mapped[datetime.datetime] = mapped_column(nullable=False)
 
     cart: Mapped["Cart"] = relationship(back_populates="items")
-    variant: Mapped["ProductVariant"] = relationship()  # noqa: F821
+    variant: Mapped["ProductVariant"] = relationship()
 
     __table_args__ = (
         UniqueConstraint("cart_id", "variant_id", name="uq_cart_item_variant"),

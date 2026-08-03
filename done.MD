@@ -2859,6 +2859,63 @@ run — all 111 backend tests pass unmodified.
 
 ---
 
+## 30. Making mypy a hard CI gate (spec §5.2) ✅
+
+Closed the last thing the CI workflow's own comment had been flagging since it was first stood up:
+`mypy` ran on every push but with `continue-on-error: true`, recorded as a real, tracked baseline
+rather than silently skipped, specifically so it wouldn't block merges before someone sat down to
+fix the pre-existing errors. That someone was this session.
+
+### What the 46 errors actually were
+
+Not all one thing — three real categories, each handled differently rather than blanket-suppressed:
+
+1. **Real bugs mypy correctly caught.** `auth_service.py`'s login flow computed
+   `valid_user = user is not None and user.status == "active"` as an intermediate boolean, then
+   branched on `not valid_user` — correct at runtime, but mypy can't follow type-narrowing through
+   a boolean proxy variable, so it flagged every subsequent `user.password_hash`/`user.id`/etc.
+   access as possibly-`None`. Restructured to guard directly on `user is None` so mypy's own flow
+   analysis narrows `user` for the rest of the function — arguably clearer code too, not just a
+   type-checker appeasement. More seriously, `_verify_mfa_factor` had a real latent crash: a
+   malformed MFA-verification request supplying neither a TOTP code nor a recovery code would hit
+   `recovery_code.strip()` on `None` and raise an unhandled `AttributeError` (a 500) instead of the
+   same clean "invalid code" response every other failure path already returns. Fixed with an
+   explicit guard, not suppressed.
+2. **A genuine float-vs-Decimal precision smell.** `review_service.py`'s rating-aggregate recompute
+   assigned a raw `float` (from `repositories/review.py`'s `func.avg()` result) into
+   `Product.rating_avg`, a `DECIMAL(3,2)` column — mypy caught the type mismatch; the actual fix is
+   `Decimal(str(round(rating_avg, 2)))` (going through `str()` first, not `Decimal(float)` directly,
+   so a float's own binary imprecision never leaks into a column whose entire point is exact
+   rating precision).
+3. **The known ORM-object-vs-Pydantic-schema class**, exactly as the original CI comment predicted:
+   passing a raw SQLAlchemy `Product.brand`/`.category`/`.images`/`.variants` directly into a
+   Pydantic schema field typed as `BrandOut`/`CategoryOut`/etc. works at runtime (every affected
+   schema has `model_config = ConfigDict(from_attributes=True)`, so Pydantic's own `__init__`
+   validation coerces it correctly) but mypy can't verify that structurally. Fixed with explicit
+   `BrandOut.model_validate(product.brand)`-style conversions at each call site rather than a
+   blanket `# type: ignore` — more code, but genuinely type-correct and arguably more explicit
+   about what's actually happening than relying on implicit duck-typing at the constructor boundary.
+
+A smaller, recurring SQLAlchemy-specific friction: `dict(result.all())` / `list(result.all())`
+against a two-column `select()` — mypy's SQLAlchemy stubs type `.all()` as `Sequence[Row[tuple[...]]]`,
+and `Row` isn't structurally a `tuple` per those stubs even though it behaves like one at runtime.
+Fixed with SQLAlchemy 2.0's own `.tuples()` method (`result.tuples().all()`) — the idiomatic,
+purpose-built solution for exactly this, not a workaround.
+
+Also real, not mypy-only: `Image.LANCZOS` (Pillow's legacy top-level resampling constant, still
+works at runtime but isn't in current type stubs) replaced with `Image.Resampling.LANCZOS` — same
+behaviour, the actually-current name.
+
+### Result
+
+All 46 errors fixed for real (no suppressions, no `# type: ignore` blanket-applied to make the
+count go down). `mypy app --ignore-missing-imports` now exits clean; the CI workflow step no longer
+has `continue-on-error: true`. Full backend suite (111 tests) and `ruff` both still pass unmodified
+— none of these were behavior changes, only making the code's actual runtime guarantees visible to
+the type checker.
+
+---
+
 ## Stack deviations from spec §5 (and why)
 
 | Spec says | Built instead | Why |

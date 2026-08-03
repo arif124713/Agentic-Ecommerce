@@ -122,9 +122,8 @@ be committed.
   `alembic upgrade head → downgrade base → upgrade head → check` cycle against a second, separate
   empty database (`blackcart_ci`) — this is a genuine from-scratch migration test, which is what
   actually caught and fixed three latent migration-ordering bugs while this workflow was being built
-  (see done.MD §15 — the baseline migration only used to create one table out of seven). `mypy` also
-  runs but is informational (`continue-on-error`), not a hard gate — see the comment in the workflow
-  file for why.
+  (see done.MD §15 — the baseline migration only used to create one table out of seven). `mypy` is a
+  hard gate too now — see done.MD for the writeup of the 46 pre-existing errors it caught and fixed.
 - **frontend** job — `npm ci`, `npm audit --audit-level=high`, `tsc -b`, `oxlint`, `vitest run`,
   `vite build`.
 
@@ -158,8 +157,6 @@ port collisions) with symptom → diagnosis → fix for each.
 
 - Initial JS bundle is ~191 KB gzipped (Vite's own build warning flags it as a single chunk over
   500 KB before gzip) — no route-level code splitting yet.
-- `mypy` runs in CI but isn't a hard gate yet — ~25 pre-existing type errors (mostly ORM-object-vs-
-  Pydantic-schema mismatches mypy can't see through `from_attributes=True`) need fixing first.
 - No Playwright E2E suite yet. Load testing and dependency/secret scanning now exist (see above and
   Continuous Integration) but aren't wired into CI as a recurring, unattended job — load testing
   needs a running server + seeded data, not a fit for a per-push CI gate; dependency/secret scanning

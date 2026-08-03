@@ -1,5 +1,6 @@
 import math
 from datetime import timedelta
+from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,7 +34,9 @@ async def _recompute_and_commit(reviews: ReviewRepository, products: ProductRepo
     product = await products.get_by_id(product_id)
     if product is None:
         return
-    product.rating_avg = round(rating_avg, 2) if rating_avg is not None else None
+    # str() first, not Decimal(rating_avg) directly — avoids float's own binary imprecision
+    # leaking into a column whose whole point (DECIMAL(3,2)) is exact rating precision.
+    product.rating_avg = Decimal(str(round(rating_avg, 2))) if rating_avg is not None else None
     product.rating_count = rating_count
     product.review_count = review_count
     await products.session.commit()

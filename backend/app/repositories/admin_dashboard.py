@@ -24,7 +24,7 @@ class AdminDashboardRepository:
 
     async def orders_by_status(self) -> dict[str, int]:
         stmt = select(Order.status, func.count()).group_by(Order.status)
-        return dict((await self.session.execute(stmt)).all())
+        return dict((await self.session.execute(stmt)).tuples().all())
 
     async def total_customers(self) -> int:
         stmt = select(func.count()).where(User.deleted_at.is_(None))

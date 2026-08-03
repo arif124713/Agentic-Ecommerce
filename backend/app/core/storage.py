@@ -98,6 +98,7 @@ class CloudflareR2StorageBackend:
         ]
         if missing:
             raise RuntimeError(f"Missing settings for the r2 storage backend: {', '.join(missing)}")
+        assert settings.r2_public_base_url is not None  # narrowed by the `missing` check above
 
         self._bucket = settings.r2_bucket_name
         self._public_base_url = settings.r2_public_base_url.rstrip("/")

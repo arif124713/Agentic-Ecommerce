@@ -10,7 +10,7 @@ from app.models.support import SupportTicket, TicketMessage
 from app.repositories.audit import AuditLogRepository
 from app.repositories.support import SupportTicketRepository
 from app.schemas.admin_support import AdminTicketListItemOut, AdminTicketOut, TicketAssignIn, TicketStatusIn
-from app.schemas.support import TicketMessageIn
+from app.schemas.support import TicketMessageIn, TicketMessageOut
 
 
 class AdminSupportService:
@@ -120,5 +120,5 @@ class AdminSupportService:
             assignee_name=ticket.assignee.first_name if ticket.assignee else None,
             created_at=ticket.created_at,
             updated_at=ticket.updated_at,
-            messages=list(ticket.messages),
+            messages=[TicketMessageOut.model_validate(m) for m in ticket.messages],
         )

@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from sqlalchemy import case, func, select
+from sqlalchemy import ColumnElement, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -32,7 +32,7 @@ class ProductRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def _category_subtree_filter(self, category_slug: str):
+    async def _category_subtree_filter(self, category_slug: str) -> ColumnElement[bool]:
         """Match the category itself and all descendants via the materialised path (spec §8.3)."""
         stmt = select(Category.path).where(Category.slug == category_slug)
         path = (await self.session.execute(stmt)).scalar_one_or_none()
@@ -75,7 +75,7 @@ class ProductRepository:
         """Returns (products, total, used_fallback). When q is given, tries a precise
         AND-of-tokens match first; a zero-result hit broadens to an OR-of-tokens match instead
         of showing a dead end (spec §14.3's "fallback broadened query")."""
-        sort_map = {
+        sort_map: dict[str, ColumnElement] = {
             "price": Product.price.asc(),
             "-price": Product.price.desc(),
             "-rating": Product.rating_avg.desc(),
@@ -109,6 +109,7 @@ class ProductRepository:
                 .options(selectinload(Product.brand))
             )
             if category_slug:
+                assert category_filter is not None  # set above precisely when category_slug is truthy
                 stmt = stmt.join(Category, Product.category_id == Category.id).where(category_filter)
             if brand_slugs:
                 stmt = stmt.join(Brand, Product.brand_id == Brand.id).where(Brand.slug.in_(brand_slugs))
@@ -230,7 +231,7 @@ class ProductRepository:
             )
             .group_by(Product.category_id)
         )
-        counts = dict((await self.session.execute(count_stmt)).all())
+        counts: dict[int, int] = dict((await self.session.execute(count_stmt)).tuples().all())
 
         return [
             (c.slug, c.name, counts.get(c.id, 0), c.slug == active_slug)
@@ -250,7 +251,7 @@ class ProductRepository:
             )
         stmt = stmt.group_by(Brand.name).order_by(func.count(Product.id).desc()).limit(20)
         result = await self.session.execute(stmt)
-        return list(result.all())
+        return list(result.tuples().all())
 
     async def similar(self, product: Product, limit: int = 8) -> list[Product]:
         """Spec §14.5's "Similar products" rail — same category, gender, and a ±40% price band

@@ -9,13 +9,17 @@ from app.models.catalog import Product
 from app.models.discovery import SearchQuery
 from app.repositories.catalog import BrandRepository, CategoryRepository, ProductRepository
 from app.schemas.catalog import (
+    BrandOut,
     CategoryFacetBucket,
+    CategoryOut,
     FacetBucket,
     ProductCardOut,
     ProductDetailOut,
     ProductFacets,
+    ProductImageOut,
     ProductListMeta,
     ProductListOut,
+    ProductVariantOut,
 )
 
 
@@ -106,8 +110,8 @@ class ProductService:
             title=product.title,
             subtitle=product.subtitle,
             description=product.description,
-            brand=product.brand,
-            category=product.category,
+            brand=BrandOut.model_validate(product.brand),
+            category=CategoryOut.model_validate(product.category),
             gender=product.gender,
             material=product.material,
             base_color=product.base_color,
@@ -118,8 +122,8 @@ class ProductService:
             rating_avg=product.rating_avg,
             rating_count=product.rating_count,
             review_count=product.review_count,
-            images=product.images,
-            variants=product.variants,
+            images=[ProductImageOut.model_validate(i) for i in product.images],
+            variants=[ProductVariantOut.model_validate(v) for v in product.variants],
         )
 
     async def similar(self, slug: str, limit: int = 8) -> list[ProductCardOut]:

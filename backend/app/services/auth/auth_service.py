@@ -210,9 +210,9 @@ class AuthService:
 
         user = await self.users.get_by_email(email)
         valid_user = user is not None and user.status == "active"
-        password_ok = verify_password(payload.password, user.password_hash if valid_user else None)
+        password_ok = verify_password(payload.password, user.password_hash if user is not None and valid_user else None)
 
-        if not valid_user or not password_ok:
+        if user is None or not valid_user or not password_ok:
             self.login_attempts.record(
                 email_hash=email_hash, ip=ip, success=False, reason="unknown_email" if not valid_user else "wrong_password"
             )
@@ -370,8 +370,18 @@ class AuthService:
 
     def _verify_mfa_factor(self, user: User, *, code: str | None, recovery_code: str | None) -> bool:
         if code:
+            if user.mfa_secret is None:
+                # mfa_enabled implies mfa_secret is set — a bare crash here would mean that
+                # invariant broke, not a bad request from the caller; verification simply fails.
+                return False
             secret = mfa.decrypt_secret(user.mfa_secret)
             return mfa.verify_code(secret, code)
+
+        if not recovery_code:
+            # Neither a TOTP code nor a recovery code was actually provided — a malformed request,
+            # not a match attempt. Without this check, `.strip()` below would raise on None instead
+            # of failing the same way every other non-match does.
+            return False
 
         # Recovery codes are single-use: a match consumes it from the stored (hashed) list.
         code_hash = hash_token(recovery_code.strip().lower())

@@ -67,14 +67,13 @@ jobs:
         run: ruff check app scripts tests
 
       - name: mypy
-        # Informational for now, not a hard gate: this project never actually ran mypy before this
-        # workflow (spec §5.2 names it, but done.MD never lists it as an enforced check), and a
-        # first run surfaces ~25 pre-existing errors — mostly the ORM-object-vs-Pydantic-schema
-        # duck-typing mypy can't see through `from_attributes=True`. Recorded here as a real,
-        # tracked baseline rather than silently skipped; tightening this to a hard gate (fixing the
-        # 25 first) is a follow-up, not bundled into standing up CI itself.
+        # A hard gate now (see done.MD for the writeup) — was informational for a while after this
+        # workflow first stood up, since the first-ever run surfaced 46 pre-existing errors: real
+        # bugs (missing None-checks that could crash on a genuinely-empty lookup, a float leaking
+        # into a Decimal-typed rating column) alongside the known ORM-object-vs-Pydantic-schema
+        # duck-typing mypy can't see through `from_attributes=True` (fixed via explicit
+        # `.model_validate()` calls instead of passing raw ORM objects to schema constructors).
         run: mypy app --ignore-missing-imports
-        continue-on-error: true
 
       - name: Wait for MySQL
         run: |

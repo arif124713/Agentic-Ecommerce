@@ -58,22 +58,16 @@ export function ProductCard({ product }: ProductCardProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pickerOpen, detailQuery.isSuccess, sizes.length, availableVariants])
 
-  const openPicker = (e: React.MouseEvent) => {
-    e.preventDefault()
-    autoAddedRef.current = false
-    setPickerOpen(true)
-  }
-
-  const closePicker = (e: React.MouseEvent) => {
-    e.preventDefault()
-    setPickerOpen(false)
-  }
-
   const showSizeRow = pickerOpen && detailQuery.isSuccess && sizes.length > 1
   const isBusy = pickerOpen && !showSizeRow
 
   return (
     <div className="group relative">
+      {/* Interactive controls (wishlist, size-picker, quick-add) live as siblings of the Link,
+          not nested inside it — <a> containing <button> is invalid HTML5 (interactive content
+          can't nest) and leaves keyboard/screen-reader activation of the inner buttons genuinely
+          ambiguous. The outer `relative` wrapper above already gives the same absolute-positioning
+          context, so the visual layout is unchanged. */}
       <Link
         to={`/p/${product.slug}`}
         className="block rounded-(--radius-md) outline-none focus-visible:ring-2 focus-visible:ring-focus-ring focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
@@ -107,81 +101,6 @@ export function ProductCard({ product }: ProductCardProps) {
               </span>
             </div>
           ) : null}
-
-          <button
-            type="button"
-            onClick={(e) => {
-              e.preventDefault()
-              if (!user) {
-                navigate(`/auth/login?next=${encodeURIComponent(window.location.pathname)}`)
-                return
-              }
-              toggleWishlist.mutate(product.slug)
-            }}
-            aria-pressed={wishlisted}
-            aria-label={wishlisted ? 'Remove from wishlist' : 'Add to wishlist'}
-            className="absolute right-2 top-2 flex h-9 w-9 items-center justify-center rounded-full bg-surface/80 backdrop-blur-sm text-text opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
-          >
-            <svg
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill={wishlisted ? 'var(--text)' : 'none'}
-              stroke="var(--text)"
-              strokeWidth="1.75"
-              aria-hidden="true"
-            >
-              <path d="M12 21s-6.7-4.35-9.3-8.1C1 10.1 1.6 6.7 4.6 5.2c2.3-1.15 4.7-.3 6 1.5.5.6.9 1.2 1.4 1.9.5-.7.9-1.3 1.4-1.9 1.3-1.8 3.7-2.65 6-1.5 3 1.5 3.6 4.9 1.9 7.7C18.7 16.65 12 21 12 21z" />
-            </svg>
-          </button>
-
-          {showSizeRow ? (
-            <div
-              role="menu"
-              aria-label="Choose a size to add to cart"
-              className="absolute inset-x-2 bottom-2 z-10 flex flex-wrap gap-1.5 rounded-(--radius-sm) bg-surface/95 p-2 backdrop-blur-sm"
-            >
-              {sizes.map((size) => (
-                <button
-                  key={size}
-                  type="button"
-                  role="menuitem"
-                  onClick={(e) => {
-                    e.preventDefault()
-                    const variant = availableVariants.find((v) => v.size === size)
-                    if (variant) addVariant(variant.id)
-                  }}
-                  className="flex h-8 min-w-8 items-center justify-center rounded-(--radius-sm) border border-border-strong px-2 text-xs text-text hover:border-text"
-                >
-                  {size}
-                </button>
-              ))}
-              <button
-                type="button"
-                onClick={closePicker}
-                aria-label="Cancel"
-                className="ml-auto flex h-8 w-8 items-center justify-center text-text-tertiary hover:text-text"
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                  <path d="M6 6l12 12M18 6L6 18" />
-                </svg>
-              </button>
-            </div>
-          ) : (
-            <button
-              type="button"
-              disabled={!product.in_stock}
-              className={cn(
-                'absolute inset-x-2 bottom-2 h-10 rounded-(--radius-sm) bg-accent text-sm font-medium text-accent-fg',
-                'opacity-0 translate-y-1 transition-[opacity,transform] duration-150 ease-(--ease-standard)',
-                'group-hover:opacity-100 group-hover:translate-y-0 group-focus-within:opacity-100 group-focus-within:translate-y-0 focus-visible:opacity-100',
-                'disabled:opacity-0 disabled:pointer-events-none',
-              )}
-              onClick={openPicker}
-            >
-              {isBusy ? 'Adding…' : 'Quick add'}
-            </button>
-          )}
         </div>
 
         <div className="mt-3 space-y-1">
@@ -202,6 +121,81 @@ export function ProductCard({ product }: ProductCardProps) {
           ) : null}
         </div>
       </Link>
+
+      <button
+        type="button"
+        onClick={() => {
+          if (!user) {
+            navigate(`/auth/login?next=${encodeURIComponent(window.location.pathname)}`)
+            return
+          }
+          toggleWishlist.mutate(product.slug)
+        }}
+        aria-pressed={wishlisted}
+        aria-label={wishlisted ? 'Remove from wishlist' : 'Add to wishlist'}
+        className="absolute right-2 top-2 flex h-9 w-9 items-center justify-center rounded-full bg-surface/80 backdrop-blur-sm text-text opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
+      >
+        <svg
+          width="18"
+          height="18"
+          viewBox="0 0 24 24"
+          fill={wishlisted ? 'var(--text)' : 'none'}
+          stroke="var(--text)"
+          strokeWidth="1.75"
+          aria-hidden="true"
+        >
+          <path d="M12 21s-6.7-4.35-9.3-8.1C1 10.1 1.6 6.7 4.6 5.2c2.3-1.15 4.7-.3 6 1.5.5.6.9 1.2 1.4 1.9.5-.7.9-1.3 1.4-1.9 1.3-1.8 3.7-2.65 6-1.5 3 1.5 3.6 4.9 1.9 7.7C18.7 16.65 12 21 12 21z" />
+        </svg>
+      </button>
+
+      {showSizeRow ? (
+        <div
+          role="group"
+          aria-label="Choose a size to add to cart"
+          className="absolute inset-x-2 bottom-2 z-10 flex flex-wrap gap-1.5 rounded-(--radius-sm) bg-surface/95 p-2 backdrop-blur-sm"
+        >
+          {sizes.map((size) => (
+            <button
+              key={size}
+              type="button"
+              onClick={() => {
+                const variant = availableVariants.find((v) => v.size === size)
+                if (variant) addVariant(variant.id)
+              }}
+              className="flex h-8 min-w-8 items-center justify-center rounded-(--radius-sm) border border-border-strong px-2 text-xs text-text hover:border-text"
+            >
+              {size}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => setPickerOpen(false)}
+            aria-label="Cancel"
+            className="ml-auto flex h-8 w-8 items-center justify-center text-text-tertiary hover:text-text"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          disabled={!product.in_stock}
+          className={cn(
+            'absolute inset-x-2 bottom-2 h-10 rounded-(--radius-sm) bg-accent text-sm font-medium text-accent-fg',
+            'opacity-0 translate-y-1 transition-[opacity,transform] duration-150 ease-(--ease-standard)',
+            'group-hover:opacity-100 group-hover:translate-y-0 group-focus-within:opacity-100 group-focus-within:translate-y-0 focus-visible:opacity-100',
+            'disabled:opacity-0 disabled:pointer-events-none',
+          )}
+          onClick={() => {
+            autoAddedRef.current = false
+            setPickerOpen(true)
+          }}
+        >
+          {isBusy ? 'Adding…' : 'Quick add'}
+        </button>
+      )}
     </div>
   )
 }

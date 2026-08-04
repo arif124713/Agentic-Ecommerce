@@ -7,6 +7,7 @@ import { AuthLayout } from './AuthLayout'
 import { Input } from '@/components/ui/Input'
 import { Button } from '@/components/ui/Button'
 import { FormAlert } from '@/components/ui/FormAlert'
+import { SeoHead } from '@/components/seo/SeoHead'
 import { forgotPassword } from '@/services/auth'
 import { getApiErrorMessage } from '@/services/apiClient'
 
@@ -44,7 +45,14 @@ export function ForgotPasswordPage() {
   }
 
   return (
-    <AuthLayout
+    <>
+      <SeoHead
+        title="Forgot Password"
+        description="Request a link to reset the password for your BlackCart account."
+        path="/auth/forgot"
+        noindex
+      />
+      <AuthLayout
       title="Forgot password"
       subtitle="Enter your email and we'll send you a link to reset it."
       footer={
@@ -69,6 +77,7 @@ export function ForgotPasswordPage() {
           Send reset link
         </Button>
       </form>
-    </AuthLayout>
+      </AuthLayout>
+    </>
   )
 }

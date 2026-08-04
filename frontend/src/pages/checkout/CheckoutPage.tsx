@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/Button'
 import { Checkbox } from '@/components/ui/Checkbox'
 import { FormAlert } from '@/components/ui/FormAlert'
 import { Skeleton } from '@/components/feedback/Skeleton'
+import { SeoHead } from '@/components/seo/SeoHead'
 import type { AddressInput } from '@/types/address'
 
 export function CheckoutPage() {
@@ -103,6 +104,12 @@ export function CheckoutPage() {
 
   return (
     <div className="container-page py-10">
+      <SeoHead
+        title="Checkout"
+        description="Complete your BlackCart purchase by confirming shipping and payment details."
+        path="/checkout"
+        noindex
+      />
       <h1 className="text-3xl font-semibold tracking-tight">Checkout</h1>
 
       <div className="mt-8 grid gap-10 md:grid-cols-[1fr_360px]">

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router'
+import { Link, useLocation, useNavigate, useParams } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
 import { cn } from '@/lib/cn'
@@ -9,10 +9,12 @@ import { EmptyState } from '@/components/feedback/EmptyState'
 import { Skeleton } from '@/components/feedback/Skeleton'
 import { getApiErrorMessage } from '@/services/apiClient'
 import { getTicket, replyToTicket } from '@/services/support'
+import { SeoHead } from '@/components/seo/SeoHead'
 
 export function TicketDetailPage() {
   const { publicId = '' } = useParams<{ publicId: string }>()
   const navigate = useNavigate()
+  const location = useLocation()
   const queryClient = useQueryClient()
   const [reply, setReply] = useState('')
 
@@ -62,6 +64,12 @@ export function TicketDetailPage() {
 
   return (
     <div className="container-page max-w-2xl py-10">
+      <SeoHead
+        title="Support Ticket"
+        description="View the messages and status of your BlackCart support ticket."
+        path={location.pathname}
+        noindex
+      />
       <button
         type="button"
         onClick={() => navigate(-1)}

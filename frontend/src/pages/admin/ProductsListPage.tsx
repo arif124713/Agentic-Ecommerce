@@ -16,6 +16,7 @@ import { FormAlert } from '@/components/ui/FormAlert'
 import { Skeleton } from '@/components/feedback/Skeleton'
 import { EmptyState, ErrorState } from '@/components/feedback/EmptyState'
 import { getApiErrorMessage } from '@/services/apiClient'
+import { SeoHead } from '@/components/seo/SeoHead'
 import type { ProductImportSummary } from '@/types/admin'
 
 const PER_PAGE = 50
@@ -131,6 +132,12 @@ export function ProductsListPage() {
 
   return (
     <div>
+      <SeoHead
+        title="Manage Products"
+        description="Search, filter, and manage the BlackCart product catalogue."
+        path="/admin/products"
+        noindex
+      />
       <div className="flex items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold tracking-tight">Products</h1>
         <div className="flex gap-2">

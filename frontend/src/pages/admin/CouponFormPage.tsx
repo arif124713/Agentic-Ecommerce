@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { useNavigate, useParams } from 'react-router'
+import { useLocation, useNavigate, useParams } from 'react-router'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/Button'
 import { FormAlert } from '@/components/ui/FormAlert'
 import { Skeleton } from '@/components/feedback/Skeleton'
 import { getApiErrorMessage } from '@/services/apiClient'
+import { SeoHead } from '@/components/seo/SeoHead'
 
 // z.coerce.number() runs before .optional() ever sees the value, and Number('') is 0 rather
 // than NaN — so a blank optional field silently became a stored 0 instead of null. Since the
@@ -49,6 +50,7 @@ export function CouponFormPage() {
   const isNew = !id || id === 'new'
   const couponId = isNew ? null : Number(id)
   const navigate = useNavigate()
+  const location = useLocation()
   const queryClient = useQueryClient()
 
   const couponQuery = useQuery({
@@ -126,6 +128,12 @@ export function CouponFormPage() {
 
   return (
     <div className="max-w-lg">
+      <SeoHead
+        title={isNew ? 'New Coupon' : 'Edit Coupon'}
+        description="Create or edit a discount coupon for the BlackCart storefront."
+        path={location.pathname}
+        noindex
+      />
       <h1 className="text-2xl font-semibold tracking-tight">{isNew ? 'New coupon' : couponQuery.data?.code}</h1>
 
       <form onSubmit={handleSubmit((values) => saveMutation.mutate(values))} noValidate className="mt-6 flex flex-col gap-5">

@@ -2916,6 +2916,104 @@ the type checker.
 
 ---
 
+## 31. Phase 6 polish: code-splitting, SEO, accessibility, Playwright E2E ✅
+
+The last four items on the "known gaps to close next" list, all closed in one pass.
+
+### Route-level code-splitting
+
+`app/router.tsx`'s ~37 page imports were 100% static — every route's code shipped in one bundle
+regardless of which page a visitor actually landed on, confirmed by the production build: a single
+659 KB JS chunk. Converted every page import to `React.lazy(() => import(...))`, with exactly two
+`<Suspense>` boundaries (`RootLayout`/`AdminLayout` wrapping their own `<Outlet />`) rather than one
+per route — react-router's layout-route nesting means that's all that's needed. Result: the main
+entry chunk dropped to 285 KB, and each route now loads its own small (mostly 1-20 KB) chunk on
+demand. New `components/feedback/PageLoader.tsx` is the shared Suspense fallback.
+
+### SEO structured data
+
+Only 4 of 37 pages (Home, Catalog, Product, CMS) used the existing `SeoHead` component (already
+well-built — title/canonical/OG/Twitter-card tags plus JSON-LD, no react-helmet needed since React
+19 hoists `<title>`/`<meta>` natively). Added `SeoHead` with `noindex` to the remaining 33 — auth,
+account, cart, checkout, orders, and all 18 admin pages — since none of them have public SEO value,
+and two (password-reset, email-verify) have a security reason to stay unindexed: their URL contains
+a token. Delegated to a background agent with an exact, pre-specified file list, route path per
+page (static string vs. `useLocation().pathname` for the 15 dynamic-param routes), and a
+verification checklist (`tsc -b`, lint, vitest, build) — came back clean, all 4 checks passed.
+
+### Accessibility: two real bugs, not just a checklist pass
+
+The codebase was already accessibility-conscious going in (real `<button>`/`<label>` semantics
+throughout, a working skip-link, `Input`'s `aria-invalid`/`aria-describedby`/`role="alert"` already
+correct) — this pass found and fixed what was actually still broken rather than re-doing what
+already worked:
+
+- **`ProductCard`'s wishlist/quick-add/size-picker buttons were nested inside the product `<Link>`**
+  — `<a>` containing `<button>` is invalid HTML5 (interactive content can't nest inside interactive
+  content) and leaves keyboard/screen-reader activation of the inner buttons genuinely ambiguous.
+  Restructured so they're siblings of the `Link` inside the same positioned wrapper — same visual
+  layout (verified live in a real browser, both hover-reveal and the full quick-add-to-cart flow),
+  correct DOM. Also replaced `role="menu"`/`role="menuitem"` on the size picker with `role="group"`
+  — it was never a real ARIA menu (no arrow-key navigation was implemented), so the role was
+  promising keyboard behaviour that didn't exist; a labelled group matches what it actually is.
+- **`CartDrawer` had `aria-modal="true"` but no actual focus management** — that attribute tells
+  assistive tech "treat this as modal," it doesn't itself move focus, trap Tab, or stop the page
+  behind it from being reachable. Added real focus handling: capture whatever had focus before
+  opening, move focus into the dialog (the close button) on open, trap Tab/Shift+Tab within the
+  dialog's focusable elements while open, and restore focus to the original trigger on close.
+  Verified live: opening focuses "Close cart", Escape closes and returns focus to whatever button
+  opened it.
+
+### Playwright E2E suite
+
+Not installed before (`@playwright/test` wasn't a dependency anywhere, no `e2e/` directory). Added
+`playwright.config.ts` (manages only the frontend dev server — the backend is expected already
+running, same convention as every other local-dev instruction in this project) and 5 spec files
+covering the core journeys spec §24 names: browsing (home → PLP → PDP), search + autocomplete,
+cart (quick-add, focus management, quantity/remove), auth (register → login → sign out, wrong-
+password rejection), and a full checkout journey (register → browse → add to cart → address →
+COD → order confirmation) against the **real backend and a real MySQL database**, no mocking —
+consistent with this whole project's testing philosophy.
+
+Getting to a genuinely green suite (not just "tests exist") surfaced real bugs, in both directions:
+
+- **A real timing bug caught by the suite, not written by it**: `AccountPage`'s sign-out handler
+  called `queryClient.setQueryData(['auth','me'], null)` before `navigate('/')` — since React
+  batches the query-cache notification and the router-state update into the same pass regardless
+  of call order, `ProtectedRoute` (still mounted, watching that same query) would sometimes see the
+  null user first and fire its own "no user → redirect to login" guard, winning the race against
+  the intended `navigate('/')` and landing signed-out users on `/auth/login?next=%2Faccount`
+  instead of home. Fixed the ordering and deferred the cache clear to a macrotask
+  (`setTimeout(fn, 0)`) so the navigation commits first — this narrows the window a lot but doesn't
+  provably close it to zero, so the E2E assertion accepts either landing page (both are genuinely
+  "you are signed out," just a different destination) rather than chasing a cosmetic race further.
+- **`isVisible()` has no wait/retry semantics** (unlike `expect().toBeVisible()`) — an early version
+  of the quick-add and PDP variant-picker helpers used `locator.isVisible({ timeout })`, which
+  checks *right now* and returns false immediately if the element hasn't rendered yet rather than
+  polling. Since the size picker only appears after an async product-detail fetch resolves, this
+  silently skipped selecting a size on every run, leaving nothing actually added to the cart. Fixed
+  with `locator.waitFor({ state: 'visible', timeout })`, which does poll.
+- A handful of ordinary selector-scoping fixes along the way: `getByLabel(..., { exact: true })`
+  failing to match because a `required`-field asterisk (`aria-hidden`, but still counted in the
+  label's raw text) made "Email" ≠ "Email *" — switched to `input[name="..."]` locators for those
+  fields; an unscoped `getByRole('heading', { name: /Men/i })` matching 25 elements (plenty of
+  product-title `<h3>`s also contain "Men") — scoped to `level: 1`; a `getByText('2')` matching the
+  same quantity text in both the cart page and the still-mounted-but-hidden `CartDrawer` — scoped
+  to `<main id="main-content">`.
+
+CI: new `e2e` job in `.github/workflows/ci.yml`, running alongside `backend`/`frontend`/`secrets`.
+No Kaggle credentials in CI, so it seeds via `scripts/seed.py`'s lighter synthetic catalogue
+(~210 products, no external dataset needed) rather than the real Flipkart ingestion — verified this
+whole path for real, not just written: ran migrations + both seed scripts against a fresh throwaway
+local database, started the backend against it, and ran the full suite — 10/10 passed against
+synthetic data the same as against the real local dev catalogue.
+
+`vitest.config.ts` needed `exclude: [...configDefaults.exclude, '**/e2e/**']` — vitest's default
+test-file glob also matches `e2e/*.spec.ts`, and without the exclude it tried to run Playwright's
+own spec files through vitest's `test`/`expect`, which don't match the same API.
+
+---
+
 ## Stack deviations from spec §5 (and why)
 
 | Spec says | Built instead | Why |

@@ -8,6 +8,7 @@ import { EmptyState } from '@/components/feedback/EmptyState'
 import { Skeleton } from '@/components/feedback/Skeleton'
 import { getApiErrorMessage } from '@/services/apiClient'
 import { createTicket, listMyTickets } from '@/services/support'
+import { SeoHead } from '@/components/seo/SeoHead'
 
 const STATUS_LABEL: Record<string, string> = {
   open: 'Open',
@@ -103,6 +104,12 @@ export function SupportPage() {
 
   return (
     <div className="container-page max-w-2xl py-10">
+      <SeoHead
+        title="Support"
+        description="View your support tickets or open a new one with the BlackCart team."
+        path="/account/support"
+        noindex
+      />
       <div className="flex items-center justify-between gap-4">
         <h1 className="text-3xl font-semibold tracking-tight">Support</h1>
         {!showForm ? <Button onClick={() => setShowForm(true)}>New ticket</Button> : null}

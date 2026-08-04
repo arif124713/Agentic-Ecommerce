@@ -5,12 +5,19 @@ import { Skeleton } from '@/components/feedback/Skeleton'
 import { EmptyState, ErrorState } from '@/components/feedback/EmptyState'
 import { getApiErrorMessage } from '@/services/apiClient'
 import { cn } from '@/lib/cn'
+import { SeoHead } from '@/components/seo/SeoHead'
 
 export function BannersListPage() {
   const query = useQuery({ queryKey: ['admin', 'cms', 'banners'], queryFn: listBanners })
 
   return (
     <div>
+      <SeoHead
+        title="Manage Banners"
+        description="Create and manage promotional banners shown on the BlackCart storefront."
+        path="/admin/cms/banners"
+        noindex
+      />
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold tracking-tight">Banners</h1>
         <Link

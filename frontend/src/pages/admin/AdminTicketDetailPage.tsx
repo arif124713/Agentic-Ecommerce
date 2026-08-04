@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router'
+import { Link, useLocation, useNavigate, useParams } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
 import { cn } from '@/lib/cn'
@@ -9,12 +9,14 @@ import { EmptyState } from '@/components/feedback/EmptyState'
 import { Skeleton } from '@/components/feedback/Skeleton'
 import { getApiErrorMessage } from '@/services/apiClient'
 import { assignTicket, getAdminTicket, replyAsStaff, updateTicketStatus } from '@/services/admin/support'
+import { SeoHead } from '@/components/seo/SeoHead'
 
 const STATUSES = ['open', 'pending', 'resolved', 'closed'] as const
 
 export function AdminTicketDetailPage() {
   const { publicId = '' } = useParams<{ publicId: string }>()
   const navigate = useNavigate()
+  const location = useLocation()
   const queryClient = useQueryClient()
   const [reply, setReply] = useState('')
   const [assigneeInput, setAssigneeInput] = useState('')
@@ -72,6 +74,12 @@ export function AdminTicketDetailPage() {
 
   return (
     <div className="max-w-2xl">
+      <SeoHead
+        title="Support Ticket"
+        description="View and respond to a customer support ticket submitted to BlackCart."
+        path={location.pathname}
+        noindex
+      />
       <button type="button" onClick={() => navigate(-1)} className="text-sm text-text-secondary hover:text-text">
         ← Back
       </button>

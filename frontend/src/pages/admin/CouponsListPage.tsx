@@ -6,12 +6,19 @@ import { Skeleton } from '@/components/feedback/Skeleton'
 import { EmptyState, ErrorState } from '@/components/feedback/EmptyState'
 import { getApiErrorMessage } from '@/services/apiClient'
 import { cn } from '@/lib/cn'
+import { SeoHead } from '@/components/seo/SeoHead'
 
 export function CouponsListPage() {
   const query = useQuery({ queryKey: ['admin', 'coupons'], queryFn: listCoupons })
 
   return (
     <div>
+      <SeoHead
+        title="Manage Coupons"
+        description="Create and manage discount coupons for the BlackCart storefront."
+        path="/admin/coupons"
+        noindex
+      />
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold tracking-tight">Coupons</h1>
         <Link

@@ -1,7 +1,7 @@
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { Link, useNavigate, useParams } from 'react-router'
+import { Link, useLocation, useNavigate, useParams } from 'react-router'
 import { useMutation } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
 import { AuthLayout } from './AuthLayout'
@@ -9,6 +9,7 @@ import { PasswordInput } from '@/components/ui/PasswordInput'
 import { Button } from '@/components/ui/Button'
 import { FormAlert } from '@/components/ui/FormAlert'
 import { PasswordStrengthMeter } from '@/components/auth/PasswordStrengthMeter'
+import { SeoHead } from '@/components/seo/SeoHead'
 import { resetPassword } from '@/services/auth'
 import { getApiErrorMessage } from '@/services/apiClient'
 
@@ -27,6 +28,7 @@ type FormValues = z.infer<typeof schema>
 export function ResetPasswordPage() {
   const { token } = useParams<{ token: string }>()
   const navigate = useNavigate()
+  const location = useLocation()
 
   const {
     register,
@@ -56,7 +58,14 @@ export function ResetPasswordPage() {
   }
 
   return (
-    <AuthLayout title="Reset password" subtitle="Choose a new password for your account.">
+    <>
+      <SeoHead
+        title="Reset Password"
+        description="Choose a new password for your BlackCart account."
+        path={location.pathname}
+        noindex
+      />
+      <AuthLayout title="Reset password" subtitle="Choose a new password for your account.">
       <form onSubmit={handleSubmit((values) => mutation.mutate(values))} noValidate className="flex flex-col gap-5">
         {mutation.isError ? <FormAlert>{getApiErrorMessage(mutation.error)}</FormAlert> : null}
 
@@ -85,6 +94,7 @@ export function ResetPasswordPage() {
           Update password
         </Button>
       </form>
-    </AuthLayout>
+      </AuthLayout>
+    </>
   )
 }

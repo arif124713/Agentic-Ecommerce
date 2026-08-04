@@ -5,12 +5,19 @@ import { Skeleton } from '@/components/feedback/Skeleton'
 import { EmptyState, ErrorState } from '@/components/feedback/EmptyState'
 import { getApiErrorMessage } from '@/services/apiClient'
 import { cn } from '@/lib/cn'
+import { SeoHead } from '@/components/seo/SeoHead'
 
 export function CmsPagesListPage() {
   const query = useQuery({ queryKey: ['admin', 'cms', 'pages'], queryFn: listPages })
 
   return (
     <div>
+      <SeoHead
+        title="Manage CMS Pages"
+        description="Create and manage static content pages published on BlackCart."
+        path="/admin/cms/pages"
+        noindex
+      />
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold tracking-tight">CMS pages</h1>
         <Link

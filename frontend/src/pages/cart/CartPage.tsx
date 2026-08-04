@@ -6,6 +6,7 @@ import { OrderSummary } from '@/components/cart/OrderSummary'
 import { EmptyState, ErrorState } from '@/components/feedback/EmptyState'
 import { Skeleton } from '@/components/feedback/Skeleton'
 import { getApiErrorMessage } from '@/services/apiClient'
+import { SeoHead } from '@/components/seo/SeoHead'
 
 export function CartPage() {
   const cart = useCart()
@@ -58,6 +59,12 @@ export function CartPage() {
 
   return (
     <div className="container-page py-10">
+      <SeoHead
+        title="Your Cart"
+        description="Review the items in your BlackCart shopping cart before checking out."
+        path="/cart"
+        noindex
+      />
       <h1 className="text-3xl font-semibold tracking-tight">Your cart</h1>
 
       <div className="mt-8 grid gap-10 md:grid-cols-[1fr_320px]">

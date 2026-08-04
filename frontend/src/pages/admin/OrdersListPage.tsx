@@ -7,6 +7,7 @@ import { Skeleton } from '@/components/feedback/Skeleton'
 import { EmptyState, ErrorState } from '@/components/feedback/EmptyState'
 import { getApiErrorMessage } from '@/services/apiClient'
 import { OrderStatusBadge } from '@/components/orders/OrderStatusBadge'
+import { SeoHead } from '@/components/seo/SeoHead'
 import type { OrderStatus } from '@/types/order'
 
 const STATUSES: OrderStatus[] = [
@@ -32,6 +33,12 @@ export function OrdersListPage() {
 
   return (
     <div>
+      <SeoHead
+        title="Manage Orders"
+        description="Search, filter, and manage customer orders placed on BlackCart."
+        path="/admin/orders"
+        noindex
+      />
       <h1 className="text-2xl font-semibold tracking-tight">Orders</h1>
 
       <div className="mt-6 flex gap-3">

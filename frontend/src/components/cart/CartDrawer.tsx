@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { Link } from 'react-router'
 import { useCartDrawerStore } from '@/store/cartDrawerStore'
 import { useCart, useRemoveCartItem, useUpdateCartItem } from '@/hooks/useCart'
@@ -7,19 +7,50 @@ import { Button } from '@/components/ui/Button'
 import { cn } from '@/lib/cn'
 import { formatMoney } from '@/lib/money'
 
+const FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
 export function CartDrawer() {
   const { isOpen, close } = useCartDrawerStore()
   const cart = useCart()
   const updateMutation = useUpdateCartItem()
   const removeMutation = useRemoveCartItem()
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const closeButtonRef = useRef<HTMLButtonElement>(null)
+  const previouslyFocused = useRef<HTMLElement | null>(null)
 
+  // Real focus management, not just aria-modal (which tells assistive tech this is a dialog but
+  // doesn't itself move focus or stop Tab from reaching the page behind it): capture whatever had
+  // focus before opening (usually the header's cart button) so it can be restored on close, move
+  // focus into the dialog on open, and trap Tab/Shift+Tab within it while it's open.
   useEffect(() => {
     if (!isOpen) return
+    previouslyFocused.current = document.activeElement as HTMLElement | null
+    closeButtonRef.current?.focus()
+
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') close()
+      if (e.key === 'Escape') {
+        close()
+        return
+      }
+      if (e.key !== 'Tab' || !dialogRef.current) return
+      const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR))
+      if (focusable.length === 0) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault()
+        last.focus()
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault()
+        first.focus()
+      }
     }
     document.addEventListener('keydown', onKeyDown)
-    return () => document.removeEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      previouslyFocused.current?.focus()
+    }
   }, [isOpen, close])
 
   const items = cart.data?.items ?? []
@@ -34,6 +65,7 @@ export function CartDrawer() {
         )}
       />
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label="Shopping cart"
@@ -46,6 +78,7 @@ export function CartDrawer() {
         <div className="flex h-16 shrink-0 items-center justify-between border-b border-border px-5">
           <h2 className="text-sm font-medium text-text">Cart{items.length > 0 ? ` (${items.length})` : ''}</h2>
           <button
+            ref={closeButtonRef}
             type="button"
             onClick={close}
             aria-label="Close cart"

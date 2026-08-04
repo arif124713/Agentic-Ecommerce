@@ -5,6 +5,7 @@ import { ProductGrid } from '@/components/product/ProductGrid'
 import { EmptyState, ErrorState } from '@/components/feedback/EmptyState'
 import { getApiErrorMessage } from '@/services/apiClient'
 import { Button } from '@/components/ui/Button'
+import { SeoHead } from '@/components/seo/SeoHead'
 
 export function WishlistPage() {
   const query = useQuery({
@@ -14,6 +15,12 @@ export function WishlistPage() {
 
   return (
     <div className="container-page py-10">
+      <SeoHead
+        title="Wishlist"
+        description="View and manage the products you've saved to your BlackCart wishlist."
+        path="/account/wishlist"
+        noindex
+      />
       <h1 className="text-3xl font-semibold tracking-tight">Wishlist</h1>
 
       <div className="mt-8">

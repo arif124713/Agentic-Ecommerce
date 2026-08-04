@@ -12,6 +12,7 @@ import { PasswordInput } from '@/components/ui/PasswordInput'
 import { Checkbox } from '@/components/ui/Checkbox'
 import { Button } from '@/components/ui/Button'
 import { FormAlert } from '@/components/ui/FormAlert'
+import { SeoHead } from '@/components/seo/SeoHead'
 import { login, mfaLoginVerify } from '@/services/auth'
 import { getApiErrorMessage } from '@/services/apiClient'
 import type { ApiErrorPayload } from '@/services/apiClient'
@@ -119,7 +120,14 @@ export function LoginPage() {
   }
 
   return (
-    <AuthLayout
+    <>
+      <SeoHead
+        title="Sign In"
+        description="Sign in to your BlackCart account to track orders and manage your profile."
+        path="/auth/login"
+        noindex
+      />
+      <AuthLayout
       title="Sign in"
       subtitle="Welcome back. Enter your details to continue."
       footer={
@@ -164,6 +172,7 @@ export function LoginPage() {
           Sign in
         </Button>
       </form>
-    </AuthLayout>
+      </AuthLayout>
+    </>
   )
 }

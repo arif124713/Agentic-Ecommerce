@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link, useParams } from 'react-router'
+import { Link, useLocation, useParams } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { cancelOrder, getOrder, getTracking } from '@/services/orders'
 import { formatMoney } from '@/lib/money'
@@ -10,12 +10,14 @@ import { Button } from '@/components/ui/Button'
 import { FormAlert } from '@/components/ui/FormAlert'
 import { Skeleton } from '@/components/feedback/Skeleton'
 import { ErrorState } from '@/components/feedback/EmptyState'
+import { SeoHead } from '@/components/seo/SeoHead'
 
 const CANCELLABLE = new Set(['pending_payment', 'confirmed', 'processing'])
 const TRACKABLE = new Set(['shipped', 'out_for_delivery'])
 
 export function OrderDetailPage() {
   const { orderNumber } = useParams()
+  const location = useLocation()
   const queryClient = useQueryClient()
   const [showCancelForm, setShowCancelForm] = useState(false)
   const [cancelReason, setCancelReason] = useState('')
@@ -67,6 +69,12 @@ export function OrderDetailPage() {
 
   return (
     <div className="container-page py-10">
+      <SeoHead
+        title="Order Details"
+        description="View the items, shipping, and status of a BlackCart order."
+        path={location.pathname}
+        noindex
+      />
       <Link to="/account/orders" className="text-sm text-text-secondary hover:text-text hover:underline">
         ← All orders
       </Link>

@@ -6,6 +6,7 @@ import { Skeleton } from '@/components/feedback/Skeleton'
 import { EmptyState, ErrorState } from '@/components/feedback/EmptyState'
 import { getApiErrorMessage } from '@/services/apiClient'
 import { cn } from '@/lib/cn'
+import { SeoHead } from '@/components/seo/SeoHead'
 
 export function UsersListPage() {
   const [q, setQ] = useState('')
@@ -16,6 +17,12 @@ export function UsersListPage() {
 
   return (
     <div>
+      <SeoHead
+        title="Manage Users"
+        description="Search and manage BlackCart customer accounts, roles, and access."
+        path="/admin/users"
+        noindex
+      />
       <h1 className="text-2xl font-semibold tracking-tight">Users</h1>
 
       <input

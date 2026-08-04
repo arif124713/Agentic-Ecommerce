@@ -8,6 +8,7 @@ import { EmptyState, ErrorState } from '@/components/feedback/EmptyState'
 import { getApiErrorMessage } from '@/services/apiClient'
 import { Button } from '@/components/ui/Button'
 import { cn } from '@/lib/cn'
+import { SeoHead } from '@/components/seo/SeoHead'
 
 const STATUSES = ['pending', 'approved', 'rejected', 'hidden'] as const
 
@@ -31,6 +32,12 @@ export function ReviewsQueuePage() {
 
   return (
     <div>
+      <SeoHead
+        title="Review Queue"
+        description="Moderate customer product reviews submitted to BlackCart."
+        path="/admin/reviews"
+        noindex
+      />
       <h1 className="text-2xl font-semibold tracking-tight">Reviews</h1>
 
       <div className="mt-6 flex gap-3">

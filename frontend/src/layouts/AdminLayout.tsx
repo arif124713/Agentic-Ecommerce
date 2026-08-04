@@ -1,6 +1,8 @@
+import { Suspense } from 'react'
 import { NavLink, Navigate, Outlet } from 'react-router'
 import { useCurrentUser } from '@/hooks/useAuth'
 import { cn } from '@/lib/cn'
+import { PageLoader } from '@/components/feedback/PageLoader'
 
 const NAV_ITEMS = [
   { label: 'Dashboard', to: '/admin' },
@@ -59,7 +61,9 @@ export function AdminLayout() {
         </div>
       </aside>
       <main className="min-w-0 flex-1 p-6 md:p-8">
-        <Outlet />
+        <Suspense fallback={<PageLoader />}>
+          <Outlet />
+        </Suspense>
       </main>
     </div>
   )

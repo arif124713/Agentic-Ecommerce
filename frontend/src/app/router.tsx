@@ -1,44 +1,96 @@
+import { lazy } from 'react'
 import { createBrowserRouter } from 'react-router'
 import { RootLayout } from '@/layouts/RootLayout'
 import { AdminLayout } from '@/layouts/AdminLayout'
-import { HomePage } from '@/pages/home/HomePage'
-import { CatalogPage } from '@/pages/catalog/CatalogPage'
-import { ProductPage } from '@/pages/product/ProductPage'
-import { LoginPage } from '@/pages/auth/LoginPage'
-import { RegisterPage } from '@/pages/auth/RegisterPage'
-import { ForgotPasswordPage } from '@/pages/auth/ForgotPasswordPage'
-import { ResetPasswordPage } from '@/pages/auth/ResetPasswordPage'
-import { VerifyEmailPage } from '@/pages/auth/VerifyEmailPage'
-import { AccountPage } from '@/pages/account/AccountPage'
-import { WishlistPage } from '@/pages/account/WishlistPage'
-import { SupportPage } from '@/pages/account/SupportPage'
-import { TicketDetailPage } from '@/pages/account/TicketDetailPage'
-import { CmsPage } from '@/pages/cms/CmsPage'
-import { CartPage } from '@/pages/cart/CartPage'
-import { CheckoutPage } from '@/pages/checkout/CheckoutPage'
-import { OrderConfirmationPage } from '@/pages/orders/OrderConfirmationPage'
-import { OrderHistoryPage } from '@/pages/orders/OrderHistoryPage'
-import { OrderDetailPage } from '@/pages/orders/OrderDetailPage'
 import { ProtectedRoute } from '@/components/auth/ProtectedRoute'
-import { DashboardPage } from '@/pages/admin/DashboardPage'
-import { ProductsListPage } from '@/pages/admin/ProductsListPage'
-import { ProductFormPage } from '@/pages/admin/ProductFormPage'
-import { OrdersListPage as AdminOrdersListPage } from '@/pages/admin/OrdersListPage'
-import { OrderDetailPage as AdminOrderDetailPage } from '@/pages/admin/OrderDetailPage'
-import { UsersListPage } from '@/pages/admin/UsersListPage'
-import { UserDetailPage } from '@/pages/admin/UserDetailPage'
-import { CouponsListPage } from '@/pages/admin/CouponsListPage'
-import { CouponFormPage } from '@/pages/admin/CouponFormPage'
-import { ReviewsQueuePage } from '@/pages/admin/ReviewsQueuePage'
-import { CmsPagesListPage } from '@/pages/admin/CmsPagesListPage'
-import { CmsPageFormPage } from '@/pages/admin/CmsPageFormPage'
-import { BannersListPage } from '@/pages/admin/BannersListPage'
-import { BannerFormPage } from '@/pages/admin/BannerFormPage'
-import { SupportQueuePage } from '@/pages/admin/SupportQueuePage'
-import { AdminTicketDetailPage } from '@/pages/admin/AdminTicketDetailPage'
-import { AuditLogsPage } from '@/pages/admin/AuditLogsPage'
-import { FeatureFlagsPage } from '@/pages/admin/FeatureFlagsPage'
-import { ApiKeysPage } from '@/pages/admin/ApiKeysPage'
+
+// Every page is its own chunk, loaded only when its route is actually visited — the whole
+// point of this file's rewrite (see done.MD): before this, all ~37 pages (admin, checkout,
+// every auth screen, ...) shipped in one 659 KB bundle regardless of which route a visitor
+// landed on. RootLayout/AdminLayout wrap their <Outlet /> in a single <Suspense>, so pages
+// don't each need their own boundary here.
+const HomePage = lazy(() => import('@/pages/home/HomePage').then((m) => ({ default: m.HomePage })))
+const CatalogPage = lazy(() => import('@/pages/catalog/CatalogPage').then((m) => ({ default: m.CatalogPage })))
+const ProductPage = lazy(() => import('@/pages/product/ProductPage').then((m) => ({ default: m.ProductPage })))
+const CmsPage = lazy(() => import('@/pages/cms/CmsPage').then((m) => ({ default: m.CmsPage })))
+const LoginPage = lazy(() => import('@/pages/auth/LoginPage').then((m) => ({ default: m.LoginPage })))
+const RegisterPage = lazy(() => import('@/pages/auth/RegisterPage').then((m) => ({ default: m.RegisterPage })))
+const ForgotPasswordPage = lazy(() =>
+  import('@/pages/auth/ForgotPasswordPage').then((m) => ({ default: m.ForgotPasswordPage })),
+)
+const ResetPasswordPage = lazy(() =>
+  import('@/pages/auth/ResetPasswordPage').then((m) => ({ default: m.ResetPasswordPage })),
+)
+const VerifyEmailPage = lazy(() =>
+  import('@/pages/auth/VerifyEmailPage').then((m) => ({ default: m.VerifyEmailPage })),
+)
+const AccountPage = lazy(() => import('@/pages/account/AccountPage').then((m) => ({ default: m.AccountPage })))
+const WishlistPage = lazy(() => import('@/pages/account/WishlistPage').then((m) => ({ default: m.WishlistPage })))
+const SupportPage = lazy(() => import('@/pages/account/SupportPage').then((m) => ({ default: m.SupportPage })))
+const TicketDetailPage = lazy(() =>
+  import('@/pages/account/TicketDetailPage').then((m) => ({ default: m.TicketDetailPage })),
+)
+const CartPage = lazy(() => import('@/pages/cart/CartPage').then((m) => ({ default: m.CartPage })))
+const CheckoutPage = lazy(() => import('@/pages/checkout/CheckoutPage').then((m) => ({ default: m.CheckoutPage })))
+const OrderConfirmationPage = lazy(() =>
+  import('@/pages/orders/OrderConfirmationPage').then((m) => ({ default: m.OrderConfirmationPage })),
+)
+const OrderHistoryPage = lazy(() =>
+  import('@/pages/orders/OrderHistoryPage').then((m) => ({ default: m.OrderHistoryPage })),
+)
+const OrderDetailPage = lazy(() =>
+  import('@/pages/orders/OrderDetailPage').then((m) => ({ default: m.OrderDetailPage })),
+)
+
+const DashboardPage = lazy(() => import('@/pages/admin/DashboardPage').then((m) => ({ default: m.DashboardPage })))
+const ProductsListPage = lazy(() =>
+  import('@/pages/admin/ProductsListPage').then((m) => ({ default: m.ProductsListPage })),
+)
+const ProductFormPage = lazy(() =>
+  import('@/pages/admin/ProductFormPage').then((m) => ({ default: m.ProductFormPage })),
+)
+const AdminOrdersListPage = lazy(() =>
+  import('@/pages/admin/OrdersListPage').then((m) => ({ default: m.OrdersListPage })),
+)
+const AdminOrderDetailPage = lazy(() =>
+  import('@/pages/admin/OrderDetailPage').then((m) => ({ default: m.OrderDetailPage })),
+)
+const UsersListPage = lazy(() => import('@/pages/admin/UsersListPage').then((m) => ({ default: m.UsersListPage })))
+const UserDetailPage = lazy(() =>
+  import('@/pages/admin/UserDetailPage').then((m) => ({ default: m.UserDetailPage })),
+)
+const CouponsListPage = lazy(() =>
+  import('@/pages/admin/CouponsListPage').then((m) => ({ default: m.CouponsListPage })),
+)
+const CouponFormPage = lazy(() =>
+  import('@/pages/admin/CouponFormPage').then((m) => ({ default: m.CouponFormPage })),
+)
+const ReviewsQueuePage = lazy(() =>
+  import('@/pages/admin/ReviewsQueuePage').then((m) => ({ default: m.ReviewsQueuePage })),
+)
+const CmsPagesListPage = lazy(() =>
+  import('@/pages/admin/CmsPagesListPage').then((m) => ({ default: m.CmsPagesListPage })),
+)
+const CmsPageFormPage = lazy(() =>
+  import('@/pages/admin/CmsPageFormPage').then((m) => ({ default: m.CmsPageFormPage })),
+)
+const BannersListPage = lazy(() =>
+  import('@/pages/admin/BannersListPage').then((m) => ({ default: m.BannersListPage })),
+)
+const BannerFormPage = lazy(() =>
+  import('@/pages/admin/BannerFormPage').then((m) => ({ default: m.BannerFormPage })),
+)
+const SupportQueuePage = lazy(() =>
+  import('@/pages/admin/SupportQueuePage').then((m) => ({ default: m.SupportQueuePage })),
+)
+const AdminTicketDetailPage = lazy(() =>
+  import('@/pages/admin/AdminTicketDetailPage').then((m) => ({ default: m.AdminTicketDetailPage })),
+)
+const AuditLogsPage = lazy(() => import('@/pages/admin/AuditLogsPage').then((m) => ({ default: m.AuditLogsPage })))
+const FeatureFlagsPage = lazy(() =>
+  import('@/pages/admin/FeatureFlagsPage').then((m) => ({ default: m.FeatureFlagsPage })),
+)
+const ApiKeysPage = lazy(() => import('@/pages/admin/ApiKeysPage').then((m) => ({ default: m.ApiKeysPage })))
 
 export const router = createBrowserRouter([
   {

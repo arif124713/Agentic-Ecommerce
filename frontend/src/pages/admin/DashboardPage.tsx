@@ -5,6 +5,7 @@ import { formatMoney } from '@/lib/money'
 import { Skeleton } from '@/components/feedback/Skeleton'
 import { ErrorState } from '@/components/feedback/EmptyState'
 import { getApiErrorMessage } from '@/services/apiClient'
+import { SeoHead } from '@/components/seo/SeoHead'
 
 function StatCard({ label, value, href }: { label: string; value: string; href?: string }) {
   const content = (
@@ -43,6 +44,12 @@ export function DashboardPage() {
 
   return (
     <div>
+      <SeoHead
+        title="Admin Dashboard"
+        description="Overview of BlackCart orders, revenue, and inventory for store administrators."
+        path="/admin"
+        noindex
+      />
       <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
 
       <div className="mt-6 grid grid-cols-2 gap-4 md:grid-cols-4">

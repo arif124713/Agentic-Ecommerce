@@ -4,6 +4,7 @@ import { listAuditLogs } from '@/services/admin/audit'
 import { Skeleton } from '@/components/feedback/Skeleton'
 import { EmptyState, ErrorState } from '@/components/feedback/EmptyState'
 import { getApiErrorMessage } from '@/services/apiClient'
+import { SeoHead } from '@/components/seo/SeoHead'
 
 const RESOURCE_TYPES = ['all', 'product', 'product_variant', 'order', 'user', 'coupon', 'cms_page', 'banner', 'support_ticket', 'feature_flag']
 
@@ -25,6 +26,12 @@ export function AuditLogsPage() {
 
   return (
     <div>
+      <SeoHead
+        title="Audit Logs"
+        description="Review the append-only log of admin actions taken across BlackCart."
+        path="/admin/audit-logs"
+        noindex
+      />
       <h1 className="text-2xl font-semibold tracking-tight">Audit logs</h1>
       <p className="mt-1 text-sm text-text-tertiary">
         Every admin mutation writes a row here with a before/after diff — append-only.

@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { useNavigate, useParams } from 'react-router'
+import { useLocation, useNavigate, useParams } from 'react-router'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/Button'
 import { FormAlert } from '@/components/ui/FormAlert'
 import { Skeleton } from '@/components/feedback/Skeleton'
 import { getApiErrorMessage } from '@/services/apiClient'
+import { SeoHead } from '@/components/seo/SeoHead'
 
 const schema = z.object({
   slug: z
@@ -31,6 +32,7 @@ export function CmsPageFormPage() {
   const isNew = !id || id === 'new'
   const pageId = isNew ? null : Number(id)
   const navigate = useNavigate()
+  const location = useLocation()
   const queryClient = useQueryClient()
 
   const pageQuery = useQuery({
@@ -103,6 +105,12 @@ export function CmsPageFormPage() {
 
   return (
     <div className="max-w-2xl">
+      <SeoHead
+        title={isNew ? 'New CMS Page' : 'Edit CMS Page'}
+        description="Create or edit a static content page for the BlackCart storefront."
+        path={location.pathname}
+        noindex
+      />
       <h1 className="text-2xl font-semibold tracking-tight">{isNew ? 'New page' : pageQuery.data?.title}</h1>
 
       {!isNew && pageQuery.data?.is_deleted ? (

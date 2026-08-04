@@ -6,6 +6,7 @@ import { Skeleton } from '@/components/feedback/Skeleton'
 import { EmptyState, ErrorState } from '@/components/feedback/EmptyState'
 import { getApiErrorMessage } from '@/services/apiClient'
 import { cn } from '@/lib/cn'
+import { SeoHead } from '@/components/seo/SeoHead'
 
 const STATUS_FILTERS = ['all', 'open', 'pending', 'resolved', 'closed'] as const
 
@@ -18,6 +19,12 @@ export function SupportQueuePage() {
 
   return (
     <div>
+      <SeoHead
+        title="Support Queue"
+        description="View and manage customer support tickets submitted to BlackCart."
+        path="/admin/support"
+        noindex
+      />
       <h1 className="text-2xl font-semibold tracking-tight">Support tickets</h1>
 
       <div className="mt-4 flex gap-2">

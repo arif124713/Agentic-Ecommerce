@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router'
+import { useLocation, useNavigate, useParams } from 'react-router'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -20,6 +20,7 @@ import { FormAlert } from '@/components/ui/FormAlert'
 import { Skeleton } from '@/components/feedback/Skeleton'
 import { getApiErrorMessage } from '@/services/apiClient'
 import { VariantsEditor } from '@/components/admin/VariantsEditor'
+import { SeoHead } from '@/components/seo/SeoHead'
 
 const schema = z.object({
   title: z.string().min(1, 'Title is required').max(255),
@@ -53,6 +54,7 @@ export function ProductFormPage() {
   const isNew = !id || id === 'new'
   const productId = isNew ? null : Number(id)
   const navigate = useNavigate()
+  const location = useLocation()
   const queryClient = useQueryClient()
 
   const brandsQuery = useQuery({ queryKey: ['admin', 'brand-options'], queryFn: listBrandOptions })
@@ -147,6 +149,12 @@ export function ProductFormPage() {
 
   return (
     <div className="max-w-3xl">
+      <SeoHead
+        title={isNew ? 'New Product' : 'Edit Product'}
+        description="Create or edit a product listing in the BlackCart catalogue."
+        path={location.pathname}
+        noindex
+      />
       <h1 className="text-2xl font-semibold tracking-tight">{isNew ? 'New product' : productQuery.data?.title}</h1>
 
       {productQuery.data?.is_deleted ? (

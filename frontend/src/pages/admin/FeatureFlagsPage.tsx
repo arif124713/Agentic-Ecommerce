@@ -8,6 +8,7 @@ import { FormAlert } from '@/components/ui/FormAlert'
 import { Skeleton } from '@/components/feedback/Skeleton'
 import { EmptyState, ErrorState } from '@/components/feedback/EmptyState'
 import { getApiErrorMessage } from '@/services/apiClient'
+import { SeoHead } from '@/components/seo/SeoHead'
 
 function NewFlagForm({ onDone }: { onDone: () => void }) {
   const queryClient = useQueryClient()
@@ -72,6 +73,12 @@ export function FeatureFlagsPage() {
 
   return (
     <div>
+      <SeoHead
+        title="Feature Flags"
+        description="Manage feature flags and gradual rollouts for the BlackCart platform."
+        path="/admin/feature-flags"
+        noindex
+      />
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Feature flags</h1>

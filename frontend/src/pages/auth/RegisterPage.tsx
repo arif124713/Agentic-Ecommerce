@@ -10,6 +10,7 @@ import { Checkbox } from '@/components/ui/Checkbox'
 import { Button } from '@/components/ui/Button'
 import { FormAlert } from '@/components/ui/FormAlert'
 import { PasswordStrengthMeter } from '@/components/auth/PasswordStrengthMeter'
+import { SeoHead } from '@/components/seo/SeoHead'
 import { registerAccount } from '@/services/auth'
 import { getApiErrorMessage } from '@/services/apiClient'
 
@@ -66,7 +67,14 @@ export function RegisterPage() {
   })
 
   return (
-    <AuthLayout
+    <>
+      <SeoHead
+        title="Create Account"
+        description="Create a BlackCart account to check out faster and track your orders."
+        path="/auth/register"
+        noindex
+      />
+      <AuthLayout
       title="Create your account"
       subtitle="Join BlackCart to check out faster and track your orders."
       footer={
@@ -146,6 +154,7 @@ export function RegisterPage() {
           Create account
         </Button>
       </form>
-    </AuthLayout>
+      </AuthLayout>
+    </>
   )
 }

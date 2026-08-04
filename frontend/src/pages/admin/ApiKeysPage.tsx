@@ -8,6 +8,7 @@ import { FormAlert } from '@/components/ui/FormAlert'
 import { Skeleton } from '@/components/feedback/Skeleton'
 import { EmptyState, ErrorState } from '@/components/feedback/EmptyState'
 import { getApiErrorMessage } from '@/services/apiClient'
+import { SeoHead } from '@/components/seo/SeoHead'
 
 function NewKeyForm({ onCreated }: { onCreated: (rawKey: string) => void }) {
   const queryClient = useQueryClient()
@@ -87,6 +88,12 @@ export function ApiKeysPage() {
 
   return (
     <div>
+      <SeoHead
+        title="API Keys"
+        description="Create and manage machine credentials for BlackCart's admin API."
+        path="/admin/api-keys"
+        noindex
+      />
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Admin API keys</h1>

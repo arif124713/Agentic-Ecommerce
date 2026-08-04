@@ -6,6 +6,7 @@ import { EmptyState, ErrorState } from '@/components/feedback/EmptyState'
 import { Skeleton } from '@/components/feedback/Skeleton'
 import { getApiErrorMessage } from '@/services/apiClient'
 import { OrderStatusBadge } from '@/components/orders/OrderStatusBadge'
+import { SeoHead } from '@/components/seo/SeoHead'
 
 export function OrderHistoryPage() {
   const query = useQuery({ queryKey: ['orders', 'list'], queryFn: listOrders })
@@ -51,6 +52,12 @@ export function OrderHistoryPage() {
 
   return (
     <div className="container-page py-10">
+      <SeoHead
+        title="Order History"
+        description="View the orders you've placed with BlackCart and their current status."
+        path="/account/orders"
+        noindex
+      />
       <h1 className="text-3xl font-semibold tracking-tight">Order history</h1>
 
       <ul className="mt-8 flex flex-col divide-y divide-border">

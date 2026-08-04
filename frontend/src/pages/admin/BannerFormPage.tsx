@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { useNavigate, useParams } from 'react-router'
+import { useLocation, useNavigate, useParams } from 'react-router'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/Button'
 import { FormAlert } from '@/components/ui/FormAlert'
 import { Skeleton } from '@/components/feedback/Skeleton'
 import { getApiErrorMessage } from '@/services/apiClient'
+import { SeoHead } from '@/components/seo/SeoHead'
 
 const schema = z.object({
   placement: z.string().min(1, 'Placement is required').max(40),
@@ -29,6 +30,7 @@ export function BannerFormPage() {
   const isNew = !id || id === 'new'
   const bannerId = isNew ? null : Number(id)
   const navigate = useNavigate()
+  const location = useLocation()
   const queryClient = useQueryClient()
 
   const bannerQuery = useQuery({
@@ -93,6 +95,12 @@ export function BannerFormPage() {
 
   return (
     <div className="max-w-lg">
+      <SeoHead
+        title={isNew ? 'New Banner' : 'Edit Banner'}
+        description="Create or edit a promotional banner for the BlackCart storefront."
+        path={location.pathname}
+        noindex
+      />
       <h1 className="text-2xl font-semibold tracking-tight">{isNew ? 'New banner' : bannerQuery.data?.title}</h1>
 
       <form onSubmit={handleSubmit((values) => saveMutation.mutate(values))} noValidate className="mt-6 flex flex-col gap-5">

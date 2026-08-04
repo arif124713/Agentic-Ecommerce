@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link, useParams } from 'react-router'
+import { Link, useLocation, useParams } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { assignRole, getAdminUser, reactivateUser, revokeRole, suspendUser } from '@/services/admin/users'
 import { getApiErrorMessage } from '@/services/apiClient'
@@ -8,9 +8,11 @@ import { FormAlert } from '@/components/ui/FormAlert'
 import { Skeleton } from '@/components/feedback/Skeleton'
 import { ErrorState } from '@/components/feedback/EmptyState'
 import { ROLE_CODES } from '@/types/admin'
+import { SeoHead } from '@/components/seo/SeoHead'
 
 export function UserDetailPage() {
   const { publicId } = useParams()
+  const location = useLocation()
   const queryClient = useQueryClient()
   const [roleToAdd, setRoleToAdd] = useState('')
   const [suspendReason, setSuspendReason] = useState('')
@@ -62,6 +64,12 @@ export function UserDetailPage() {
 
   return (
     <div className="max-w-2xl">
+      <SeoHead
+        title="User Details"
+        description="View and manage a BlackCart customer's roles and account access."
+        path={location.pathname}
+        noindex
+      />
       <Link to="/admin/users" className="text-sm text-text-secondary hover:text-text hover:underline">
         ← All users
       </Link>

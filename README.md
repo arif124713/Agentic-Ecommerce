@@ -126,6 +126,11 @@ be committed.
   hard gate too now — see done.MD for the writeup of the 46 pre-existing errors it caught and fixed.
 - **frontend** job — `npm ci`, `npm audit --audit-level=high`, `tsc -b`, `oxlint`, `vitest run`,
   `vite build`.
+- **e2e** job — a real MySQL 8 service container, migrations + `scripts/seed_rbac.py` +
+  `scripts/seed.py` (the lighter synthetic catalogue — no Kaggle credentials in CI), the backend
+  started for real, then Playwright (`frontend/e2e/`) against a real frontend dev server hitting
+  that real backend — browsing, search, cart, auth, and a full checkout journey. No mocking,
+  matching this project's testing convention throughout. See done.MD §31.
 
 ### Branch protection (do this in GitHub's UI — not something this repo/CI config can set for you)
 
@@ -133,10 +138,11 @@ Once this repo has a GitHub remote:
 
 1. **Settings → Branches → Add branch protection rule**, pattern `main`.
 2. Enable **"Require a pull request before merging"**.
-3. Enable **"Require status checks to pass before merging"**, then search for and select all three:
-   `Secret scan (gitleaks)`, `Backend (ruff · mypy · pytest+coverage · alembic)`, and
-   `Frontend (tsc · oxlint · vitest · build)` — they only appear in that search list after the
-   workflow has run at least once on the repo, so push once first, then come back and add the rule.
+3. Enable **"Require status checks to pass before merging"**, then search for and select all four:
+   `Secret scan (gitleaks)`, `Backend (ruff · mypy · pytest+coverage · alembic)`,
+   `Frontend (tsc · oxlint · vitest · build)`, and `E2E (Playwright)` — they only appear in that
+   search list after the workflow has run at least once on the repo, so push once first, then come
+   back and add the rule.
 4. Optionally enable **"Require branches to be up to date before merging"** so a stale PR must
    rebase/merge `main` before the checks are trusted.
 5. Consider **"Do not allow bypassing the above settings"** to apply the rule to admins too.
@@ -155,12 +161,12 @@ port collisions) with symptom → diagnosis → fix for each.
 
 ## Known gaps to close next
 
-- Initial JS bundle is ~191 KB gzipped (Vite's own build warning flags it as a single chunk over
-  500 KB before gzip) — no route-level code splitting yet.
-- No Playwright E2E suite yet. Load testing and dependency/secret scanning now exist (see above and
-  Continuous Integration) but aren't wired into CI as a recurring, unattended job — load testing
-  needs a running server + seeded data, not a fit for a per-push CI gate; dependency/secret scanning
-  already runs on every push (see Continuous Integration above).
+- Load testing (`k6`, above) isn't wired into CI as a recurring, unattended job — it needs a
+  running server + seeded data, not a fit for a per-push CI gate. Dependency/secret scanning and
+  E2E already run on every push (see Continuous Integration above).
+- A known, narrow, cosmetic timing race on sign-out can land the user on `/auth/login?next=...`
+  instead of home (both are valid "you're signed out" states — see done.MD §31 for the full
+  writeup; caught by the E2E suite, not fully closed rather than chased further).
 
 ## Directory layout
 

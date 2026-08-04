@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link, useParams } from 'react-router'
+import { Link, useLocation, useParams } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getAdminOrder, refundOrder, transitionOrder } from '@/services/admin/orders'
 import { formatMoney } from '@/lib/money'
@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/Button'
 import { FormAlert } from '@/components/ui/FormAlert'
 import { Skeleton } from '@/components/feedback/Skeleton'
 import { ErrorState } from '@/components/feedback/EmptyState'
+import { SeoHead } from '@/components/seo/SeoHead'
 import type { OrderStatus } from '@/types/order'
 
 const TRANSITIONS: OrderStatus[] = [
@@ -27,6 +28,7 @@ const TRANSITIONS: OrderStatus[] = [
 
 export function OrderDetailPage() {
   const { orderNumber } = useParams()
+  const location = useLocation()
   const queryClient = useQueryClient()
   const [nextStatus, setNextStatus] = useState('')
   const [transitionReason, setTransitionReason] = useState('')
@@ -69,6 +71,12 @@ export function OrderDetailPage() {
 
   return (
     <div>
+      <SeoHead
+        title="Order Details"
+        description="View and manage a customer order, including status transitions and refunds."
+        path={location.pathname}
+        noindex
+      />
       <Link to="/admin/orders" className="text-sm text-text-secondary hover:text-text hover:underline">
         ← All orders
       </Link>

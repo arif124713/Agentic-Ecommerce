@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link, useParams, useSearchParams } from 'react-router'
+import { Link, useLocation, useParams, useSearchParams } from 'react-router'
 import { useMutation } from '@tanstack/react-query'
 import { AuthLayout } from './AuthLayout'
 import { Button } from '@/components/ui/Button'
 import { FormAlert } from '@/components/ui/FormAlert'
+import { SeoHead } from '@/components/seo/SeoHead'
 import { resendVerification, verifyEmail } from '@/services/auth'
 import { getApiErrorMessage } from '@/services/apiClient'
 
@@ -11,6 +12,7 @@ const RESEND_COOLDOWN_SECONDS = 60
 
 export function VerifyEmailPage() {
   const { token } = useParams<{ token?: string }>()
+  const location = useLocation()
   const [searchParams] = useSearchParams()
   const email = searchParams.get('email')
   const [cooldown, setCooldown] = useState(0)
@@ -91,7 +93,14 @@ export function VerifyEmailPage() {
   }
 
   return (
-    <AuthLayout
+    <>
+      <SeoHead
+        title="Verify Email"
+        description="Verify your email address to activate your BlackCart account."
+        path={location.pathname}
+        noindex
+      />
+      <AuthLayout
       title="Check your inbox"
       subtitle={
         email ? (
@@ -124,6 +133,7 @@ export function VerifyEmailPage() {
           Back to sign in
         </Link>
       </div>
-    </AuthLayout>
+      </AuthLayout>
+    </>
   )
 }

@@ -1,4 +1,4 @@
-import { Link, useParams } from 'react-router'
+import { Link, useLocation, useParams } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
 import { getOrder } from '@/services/orders'
 import { formatMoney } from '@/lib/money'
@@ -6,9 +6,11 @@ import { Button } from '@/components/ui/Button'
 import { Skeleton } from '@/components/feedback/Skeleton'
 import { ErrorState } from '@/components/feedback/EmptyState'
 import { getApiErrorMessage } from '@/services/apiClient'
+import { SeoHead } from '@/components/seo/SeoHead'
 
 export function OrderConfirmationPage() {
   const { orderNumber } = useParams()
+  const location = useLocation()
   const query = useQuery({
     queryKey: ['orders', 'detail', orderNumber],
     queryFn: () => getOrder(orderNumber!),
@@ -78,6 +80,12 @@ export function OrderConfirmationPage() {
 
   return (
     <div className="container-page flex justify-center py-16">
+      <SeoHead
+        title="Order Confirmed"
+        description="Confirmation details for your recently placed BlackCart order."
+        path={location.pathname}
+        noindex
+      />
       <div className="w-full max-w-md text-center">
         <svg
           width="48"

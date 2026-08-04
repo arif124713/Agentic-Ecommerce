@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { FormAlert } from '@/components/ui/FormAlert'
 import { useCurrentUser } from '@/hooks/useAuth'
+import { SeoHead } from '@/components/seo/SeoHead'
 import {
   listSessions,
   logout,
@@ -189,8 +190,15 @@ export function AccountPage() {
   const logoutMutation = useMutation({
     mutationFn: logout,
     onSuccess: () => {
-      queryClient.setQueryData(['auth', 'me'], null)
+      // Calling order alone doesn't fix this — React batches both the router-state update and
+      // the React Query cache notification into the same pass regardless of which line runs
+      // first. The setTimeout defers clearing the cached user until after navigate('/')'s update
+      // has actually committed and unmounted this ProtectedRoute-wrapped page; without it,
+      // AccountPage briefly re-renders with a null user while still mounted, and ProtectedRoute's
+      // own "no user -> redirect to login" guard wins the race, landing signed-out users on a
+      // login prompt instead of home (caught by an E2E test, not by unit tests — a timing race).
       navigate('/', { replace: true })
+      setTimeout(() => queryClient.setQueryData(['auth', 'me'], null), 0)
     },
   })
 
@@ -211,6 +219,12 @@ export function AccountPage() {
 
   return (
     <div className="container-page py-10">
+      <SeoHead
+        title="Your Account"
+        description="Manage your BlackCart profile, security settings, and active sessions."
+        path="/account"
+        noindex
+      />
       <h1 className="text-3xl font-semibold tracking-tight">Account</h1>
 
       <div className="mt-8 grid gap-8 md:grid-cols-[240px_1fr]">

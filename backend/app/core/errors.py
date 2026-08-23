@@ -98,6 +98,24 @@ class RateLimitedError(AppError):
     message = "Too many requests. Please try again later."
 
 
+class LlmUpstreamError(AppError):
+    """chat_spec.md §7.3's LLM_UPSTREAM_ERROR — DeepSeek itself failed or timed out."""
+
+    code = "LLM_UPSTREAM_ERROR"
+    status_code = status.HTTP_502_BAD_GATEWAY
+    message = "The assistant is temporarily unavailable. Please try again."
+
+
+class McpServerUnavailableError(AppError):
+    """chat_spec.md §7.3's MCP_SERVER_UNAVAILABLE — a required MCP server (Railway service) is
+    unreachable. Distinct from a single tool call failing mid-turn (that's handled inline, the
+    agent says so and continues) — this is for when the agent can't even start."""
+
+    code = "MCP_SERVER_UNAVAILABLE"
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    message = "A required service is temporarily unavailable. Please try again shortly."
+
+
 class AccountLockedError(AppError):
     code = "ACCOUNT_LOCKED"
     status_code = status.HTTP_423_LOCKED

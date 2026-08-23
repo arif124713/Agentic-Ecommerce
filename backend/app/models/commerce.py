@@ -290,3 +290,33 @@ class Refund(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(nullable=False)
 
     __table_args__ = (Index("ix_refunds_order", "order_id"),)
+
+
+class Return(Base, TimestampMixin):
+    """chat_spec.md §10's `returns` (RMA), backing `get_return_eligibility` / `initiate_return`.
+    No table for this existed before the chat feature — `Refund` only covers money moving back,
+    not the request/approval workflow that precedes it. `user_id` is denormalized from
+    `order_items.order_id.user_id` so support-mcp can scope "does this RMA belong to the session
+    user" with one indexed lookup instead of a join through `orders`, matching spec §4.3's
+    requirement that ownership checks never depend on the model passing the right id."""
+
+    __tablename__ = "returns"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    public_id: Mapped[str] = mapped_column(CHAR(26), unique=True, nullable=False)
+    order_item_id: Mapped[int] = mapped_column(
+        ForeignKey("order_items.id", ondelete="RESTRICT"), nullable=False
+    )
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    reason_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="requested", nullable=False)
+    resolved_at: Mapped[datetime.datetime | None] = mapped_column(nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('requested','approved','rejected','received','refunded','cancelled')",
+            name="ck_returns_status",
+        ),
+        Index("ix_returns_user", "user_id", "created_at"),
+        Index("ix_returns_order_item", "order_item_id"),
+    )

@@ -6,6 +6,7 @@ import { PageLoader } from '@/components/feedback/PageLoader'
 
 const NAV_ITEMS = [
   { label: 'Dashboard', to: '/admin' },
+  { label: 'Ask BlackCart', to: '/admin/ask' },
   { label: 'Products', to: '/admin/products' },
   { label: 'Orders', to: '/admin/orders' },
   { label: 'Users', to: '/admin/users' },

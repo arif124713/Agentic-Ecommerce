@@ -113,6 +113,7 @@ class Settings(BaseSettings):
     cod_surcharge: str = Field(default="20", alias="COD_SURCHARGE")
     delivery_min_days: int = Field(default=3, alias="DELIVERY_MIN_DAYS")
     delivery_max_days: int = Field(default=6, alias="DELIVERY_MAX_DAYS")
+    return_window_days: int = Field(default=7, alias="RETURN_WINDOW_DAYS")
     delivery_simulator_minutes_per_hour: float = Field(
         default=0.05,
         alias="DELIVERY_SIMULATOR_MINUTES_PER_HOUR",
@@ -120,6 +121,43 @@ class Settings(BaseSettings):
         "the 34-hour T+0..T+34h schedule (spec §13.1) into ~1.7 real minutes.",
     )
     payment_simulator_success_rate: float = Field(default=0.9, alias="PAYMENT_SIMULATOR_SUCCESS_RATE")
+
+    # --- Chat agents (chat_spec.md §11.1) ---
+    deepseek_api_key: str | None = Field(default=None, alias="DEEPSEEK_API_KEY")
+    deepseek_base_url: str = Field(default="https://api.deepseek.com", alias="DEEPSEEK_BASE_URL")
+    deepseek_model: str = Field(default="deepseek-chat", alias="DEEPSEEK_MODEL")
+    llm_timeout_seconds: int = Field(default=45, alias="LLM_TIMEOUT_SECONDS")
+    llm_max_retries: int = Field(default=2, alias="LLM_MAX_RETRIES")
+    stylist_temperature: float = Field(default=0.5, alias="STYLIST_TEMPERATURE")
+    support_temperature: float = Field(default=0.2, alias="SUPPORT_TEMPERATURE")
+    insights_temperature: float = Field(default=0.1, alias="INSIGHTS_TEMPERATURE")
+    max_context_messages: int = Field(default=20, alias="MAX_CONTEXT_MESSAGES")
+    # Each agent has its OWN cap (spec §5's table: 6/4/5) — a single global constant would let the
+    # loosest agent's needs silently set the ceiling for the strictest one.
+    stylist_max_tool_iterations: int = Field(default=6, alias="STYLIST_MAX_TOOL_ITERATIONS")
+    support_max_tool_iterations: int = Field(default=4, alias="SUPPORT_MAX_TOOL_ITERATIONS")
+    insights_max_tool_iterations: int = Field(default=5, alias="INSIGHTS_MAX_TOOL_ITERATIONS")
+    # MCP server URLs (Railway streamable-http in prod; run_mcp_server.py's local ports by
+    # default, so the bridge works against a local dev stack with zero env config).
+    catalog_mcp_url: str = Field(default="http://127.0.0.1:8101/mcp", alias="CATALOG_MCP_URL")
+    weather_mcp_url: str = Field(default="http://127.0.0.1:8102/mcp", alias="WEATHER_MCP_URL")
+    support_mcp_url: str = Field(default="http://127.0.0.1:8103/mcp", alias="SUPPORT_MCP_URL")
+    analytics_mcp_url: str = Field(default="http://127.0.0.1:8104/mcp", alias="ANALYTICS_MCP_URL")
+
+    # --- Chat MCP servers (chat_implementation_plan.md) ---
+    # analytics-mcp connects with its OWN role, never `mysql_user` — that's the whole point of
+    # `scripts/provision_analytics_ro.sql`'s grant boundary (spec §4.4: "no PII, ever," enforced by
+    # the DB role, not by tool code). catalog-mcp and support-mcp reuse the primary `database_url`.
+    analytics_mysql_user: str = Field(default="analytics_ro", alias="ANALYTICS_MYSQL_USER")
+    analytics_mysql_password: str = Field(default="", alias="ANALYTICS_MYSQL_PASSWORD")
+    # Each of the 4 MCP servers is its own Railway service/process (chat_implementation_plan.md
+    # §5), so "the" MCP port only matters for local dev running them side by side — Railway sets
+    # $PORT per service in prod, read directly by each entrypoint rather than through Settings.
+    mcp_transport: str = Field(default="stdio", alias="MCP_TRANSPORT")
+    mcp_call_timeout_seconds: int = Field(default=15, alias="MCP_CALL_TIMEOUT_SECONDS")
+    weather_cache_ttl_seconds: int = Field(default=1800, alias="WEATHER_CACHE_TTL_SECONDS")
+    session_ttl_hours: int = Field(default=24, alias="SESSION_TTL_HOURS")
+    min_products_per_recommendation: int = Field(default=5, alias="MIN_PRODUCTS_PER_RECOMMENDATION")
 
     @property
     def database_url(self) -> str:
@@ -133,6 +171,13 @@ class Settings(BaseSettings):
         """Used by Alembic, which runs migrations synchronously."""
         return (
             f"mysql+pymysql://{self.mysql_user}:{self.mysql_password}"
+            f"@{self.mysql_host}:{self.mysql_port}/{self.mysql_db}?charset=utf8mb4"
+        )
+
+    @property
+    def analytics_database_url(self) -> str:
+        return (
+            f"mysql+aiomysql://{self.analytics_mysql_user}:{self.analytics_mysql_password}"
             f"@{self.mysql_host}:{self.mysql_port}/{self.mysql_db}?charset=utf8mb4"
         )
 

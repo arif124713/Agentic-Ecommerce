@@ -1,5 +1,7 @@
 from app.db.base import Base
+from app.models.analytics import CategoryPerformanceSummary, DailySalesSummary, ProductVelocitySummary
 from app.models.audit import AuditLog
+from app.models.chat import AdminAuditLog, ChatMessage, ChatSession, ToolCallLog
 from app.models.auth import (
     ApiKey,
     EmailVerificationToken,
@@ -35,6 +37,7 @@ from app.models.commerce import (
     Payment,
     PaymentEvent,
     Refund,
+    Return,
     Shipment,
     ShipmentEvent,
 )
@@ -48,6 +51,7 @@ from app.models.discovery import (
 )
 from app.models.feature_flag import FeatureFlag
 from app.models.review import Review
+from app.models.styling import ClimateProfile, ColorPalette, DestinationAlias
 from app.models.support import SupportTicket, TicketMessage
 
 __all__ = [
@@ -81,6 +85,7 @@ __all__ = [
     "Payment",
     "PaymentEvent",
     "Refund",
+    "Return",
     "Shipment",
     "ShipmentEvent",
     "SearchQuery",
@@ -96,4 +101,14 @@ __all__ = [
     "TicketMessage",
     "AuditLog",
     "FeatureFlag",
+    "ChatSession",
+    "ChatMessage",
+    "ToolCallLog",
+    "AdminAuditLog",
+    "ColorPalette",
+    "ClimateProfile",
+    "DestinationAlias",
+    "DailySalesSummary",
+    "ProductVelocitySummary",
+    "CategoryPerformanceSummary",
 ]

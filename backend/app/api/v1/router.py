@@ -15,6 +15,9 @@ from app.api.v1.admin import support as admin_support
 from app.api.v1.admin import users as admin_users
 from app.api.v1.auth import router as auth
 from app.api.v1.cart import router as cart
+from app.api.v1.chat import insights as chat_insights
+from app.api.v1.chat import stylist as chat_stylist
+from app.api.v1.chat import support as chat_support
 from app.api.v1.discovery import router as discovery
 from app.api.v1.orders import router as orders
 from app.api.v1.payments import router as payments
@@ -48,3 +51,6 @@ api_router.include_router(admin_support.router)
 api_router.include_router(admin_audit.router)
 api_router.include_router(admin_feature_flags.router)
 api_router.include_router(admin_api_keys.router)
+api_router.include_router(chat_insights.router)
+api_router.include_router(chat_support.router)
+api_router.include_router(chat_stylist.router)

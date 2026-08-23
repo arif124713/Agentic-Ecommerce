@@ -91,6 +91,9 @@ const FeatureFlagsPage = lazy(() =>
   import('@/pages/admin/FeatureFlagsPage').then((m) => ({ default: m.FeatureFlagsPage })),
 )
 const ApiKeysPage = lazy(() => import('@/pages/admin/ApiKeysPage').then((m) => ({ default: m.ApiKeysPage })))
+const InsightsChatPage = lazy(() =>
+  import('@/pages/admin/InsightsChatPage').then((m) => ({ default: m.InsightsChatPage })),
+)
 
 export const router = createBrowserRouter([
   {
@@ -201,6 +204,7 @@ export const router = createBrowserRouter([
       { path: 'audit-logs', element: <AuditLogsPage /> },
       { path: 'feature-flags', element: <FeatureFlagsPage /> },
       { path: 'api-keys', element: <ApiKeysPage /> },
+      { path: 'ask', element: <InsightsChatPage /> },
     ],
   },
 ])

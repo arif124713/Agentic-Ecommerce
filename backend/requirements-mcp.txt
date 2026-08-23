@@ -1,0 +1,7 @@
+# Runtime dependencies for the four chat MCP servers (backend/app/mcp/), deployed as their own
+# Railway services (chat_implementation_plan.md §5) — deliberately NOT part of requirements.txt,
+# which is what actually ships in the Vercel function per that file's own comment. Installing this
+# on top of requirements.txt is enough to run any of the four via run_mcp_server.py, since the
+# servers import app.models/app.core/app.db directly (same package, different entrypoint).
+mcp==1.29.0
+httpx==0.28.1

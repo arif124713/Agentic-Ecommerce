@@ -2,12 +2,11 @@
 
 Full spec: [`spec.MD`](./spec.MD). This README covers what's actually built so far and how to run it.
 
-**Live**: https://ecommerce-six-jet-62.vercel.app — storefront, catalogue, cart, checkout, and admin
-are fully live. The multi-agent chat widget (see below) is deployed and correctly auth-gated on this
-URL, but is **not yet functional live** — `DEEPSEEK_API_KEY` and the four `*_MCP_URL` variables
-aren't provisioned in Vercel production, and the four MCP servers themselves currently only run
-locally (Railway deployment is still open, see "Known gaps to close next"). Everything else works
-end to end on the live URL.
+**Live**: https://ecommerce-six-jet-62.vercel.app — storefront, catalogue, cart, checkout, admin, and
+the multi-agent chat feature are all live and functional. The 4 chat MCP servers run as mounted
+routes on the same Vercel backend service (`/api/mcp/*`, see "Multi-agent commerce chat" below)
+rather than as separate Railway services as originally planned — confirmed live end-to-end with a
+real streamed Stylist response backed by real DeepSeek tool calls into the catalogue.
 
 ## Status
 
@@ -156,15 +155,26 @@ provisioning that read-only role first.)
 bottom-right on the storefront (Stylist), on order/account pages (Support), and at `/admin/insights`
 (Insights, admin-only).
 
-### Deploying the MCP servers (open — see "Known gaps to close next")
+### How the MCP servers are actually deployed
 
 The backend calls each MCP server over HTTP via `CATALOG_MCP_URL` / `WEATHER_MCP_URL` /
 `SUPPORT_MCP_URL` / `ANALYTICS_MCP_URL` (defaulting to `http://127.0.0.1:81{01..04}/mcp` for local
-dev). In production these need to point at real `streamable-http` deployments — planned on Railway,
-one service per server (`MCP_TRANSPORT=streamable-http python run_mcp_server.py <name>`, Railway
-sets `$PORT` itself) — plus `DEEPSEEK_API_KEY` set in Vercel. Neither is done yet, which is why the
-live URL's chat widget is visible and correctly routed but not yet functional (see "Live" note at
-the top).
+dev, where they run as the standalone processes above). In production, rather than deploying each as
+its own Railway service as chat_implementation_plan.md originally planned, all four are mounted as
+sub-apps directly on the existing Vercel backend service (`backend/app/main.py`, under
+`/api/mcp/{catalog,weather,support,analytics}/mcp`) — one deployment instead of five, since Vercel's
+existing `/api(/.*)?` rewrite already covers the new paths for free. Two things that needed fixing
+for this to actually work, in case this ever gets revisited:
+- FastMCP's streamable-http transport defaults to DNS-rebinding protection that only allows
+  `127.0.0.1`/`localhost` Host headers (correct for standalone-process Railway services, wrong once
+  mounted on a real domain) — `main.py` extends that allowlist with whatever host the `*_MCP_URL`
+  vars actually resolve to.
+- Mounting means `/api/mcp/*` is a **public** path on the same domain as everything else, unlike
+  Railway's private-network isolation — nothing would otherwise stop a random caller from hitting
+  e.g. `support-mcp`'s tools directly with an arbitrary `user_id`, bypassing the bridge's server-side
+  injection entirely. `MCP_INTERNAL_SECRET` closes that: a shared secret `main.py` requires as a
+  header on every `/api/mcp/*` request (sent automatically by `app/agents/mcp_pool.py`), a no-op in
+  local dev where it's unset.
 
 ## What's deferred
 
@@ -252,12 +262,10 @@ port collisions) with symptom → diagnosis → fix for each.
 - A known, narrow, cosmetic timing race on sign-out can land the user on `/auth/login?next=...`
   instead of home (both are valid "you're signed out" states — see done.MD §31 for the full
   writeup; caught by the E2E suite, not fully closed rather than chased further).
-- **Chat feature isn't live yet** — the four MCP servers (`backend/app/mcp/*.py`) only run locally;
-  they need real Railway deployments (`streamable-http` transport, one service each), and
-  `DEEPSEEK_API_KEY` plus the four `*_MCP_URL` vars need to be set in Vercel production. Until then
-  the chat widget is deployed and correctly auth-gated on the live URL but returns an upstream error
-  if actually used. See "Multi-agent commerce chat" above and `chat_implementation_plan.md`'s M8
-  section.
+- The chat feature's MCP servers are mounted on the same Vercel service rather than deployed as
+  independent Railway services (see "How the MCP servers are actually deployed" above) — a
+  deliberate simplification, not a gap, but it does mean they share the backend's cold starts/limits
+  rather than scaling independently. Revisit if that ever becomes a real bottleneck.
 
 ## Directory layout
 

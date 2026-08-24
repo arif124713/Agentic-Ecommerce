@@ -1,4 +1,4 @@
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,16 +15,38 @@ from app.core.storage import MEDIA_ROOT
 from app.middleware.request_id import RequestIDMiddleware
 from app.middleware.response_envelope import ResponseEnvelopeMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
+from app.mcp.analytics import mcp as analytics_mcp
+from app.mcp.catalog import mcp as catalog_mcp
+from app.mcp.support import mcp as support_mcp
+from app.mcp.weather import mcp as weather_mcp
 
 settings = get_settings()
 configure_logging()
 logger = get_logger("blackcart.main")
 
+# The four chat-feature MCP servers (app/mcp/*.py), mounted as sub-apps rather than run as
+# standalone Railway services (chat_implementation_plan.md §5 originally planned the latter) — this
+# repo deploys as a single Vercel Python service, so co-locating them here is one deployment instead
+# of five, at the cost of collapsing "separate network service" isolation down to "separate Starlette
+# routes in one process." The tool-visibility boundary (AgentConfig.servers in app/agents/runtime.py)
+# and the analytics_ro DB-role boundary are both unaffected either way — neither depends on process
+# separation. Each is reached over real HTTP (CATALOG_MCP_URL etc., set to this same origin in
+# production), matching local dev's `run_mcp_server.py` standalone-process URLs exactly — the bridge
+# code (app/agents/mcp_pool.py) doesn't know or care which case it's in.
+_MCP_APPS = {"catalog": catalog_mcp, "weather": weather_mcp, "support": support_mcp, "analytics": analytics_mcp}
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     logger.info("startup", env=settings.app_env)
-    yield
+    # Each FastMCP streamable-http ASGI app owns a StreamableHTTPSessionManager that MUST have its
+    # `.run()` context active for the whole process lifetime — Starlette doesn't auto-propagate a
+    # mounted sub-app's own lifespan into the parent's, so this has to be done explicitly (the
+    # documented MCP SDK pattern for mounting multiple servers into one ASGI app).
+    async with AsyncExitStack() as stack:
+        for m in _MCP_APPS.values():
+            await stack.enter_async_context(m.session_manager.run())
+        yield
 
 
 app = FastAPI(
@@ -66,6 +88,13 @@ if settings.storage_backend == "local":
 app.include_router(operational_router)
 app.include_router(seo_router)
 app.include_router(api_router, prefix=settings.api_prefix)
+
+# Mounted under /api/mcp/* so vercel.json's existing "/api(/.*)?" -> backend rewrite already covers
+# them — no separate Vercel service/rewrite needed. Each FastMCP app registers its own streamable
+# endpoint at "/mcp" relative to its mount point (FastMCP's default streamable_http_path), so the
+# full path is e.g. /api/mcp/catalog/mcp — matching what CATALOG_MCP_URL etc. must be set to.
+for _name, _mcp in _MCP_APPS.items():
+    app.mount(f"/api/mcp/{_name}", _mcp.streamable_http_app())
 
 # spec §21.2's Prometheus metrics — request rate/latency/status per route out of the box
 # (http_requests_total, http_request_duration_seconds). The rest of §21.2's business/domain

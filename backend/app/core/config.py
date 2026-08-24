@@ -157,6 +157,10 @@ class Settings(BaseSettings):
     mcp_call_timeout_seconds: int = Field(default=15, alias="MCP_CALL_TIMEOUT_SECONDS")
     weather_cache_ttl_seconds: int = Field(default=1800, alias="WEATHER_CACHE_TTL_SECONDS")
     session_ttl_hours: int = Field(default=24, alias="SESSION_TTL_HOURS")
+    # Gates the temporary /api/v1/ops/provision-chat-db endpoint (app/api/v1/ops_provision.py) —
+    # unset in every environment except production during the one-time chat-feature provisioning
+    # step; the endpoint 404s without it. Remove both once that one-time run is done.
+    migration_trigger_secret: str | None = Field(default=None, alias="MIGRATION_TRIGGER_SECRET")
     min_products_per_recommendation: int = Field(default=5, alias="MIN_PRODUCTS_PER_RECOMMENDATION")
 
     @property

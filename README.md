@@ -2,6 +2,13 @@
 
 Full spec: [`spec.MD`](./spec.MD). This README covers what's actually built so far and how to run it.
 
+**Live**: https://ecommerce-six-jet-62.vercel.app — storefront, catalogue, cart, checkout, and admin
+are fully live. The multi-agent chat widget (see below) is deployed and correctly auth-gated on this
+URL, but is **not yet functional live** — `DEEPSEEK_API_KEY` and the four `*_MCP_URL` variables
+aren't provisioned in Vercel production, and the four MCP servers themselves currently only run
+locally (Railway deployment is still open, see "Known gaps to close next"). Everything else works
+end to end on the live URL.
+
 ## Status
 
 **Phase 0 (Foundations) + start of Phase 1 (Data & Catalogue)**, per the spec's roadmap (§29). Running
@@ -82,6 +89,83 @@ writeup, including a real CORP-header bug this pipeline's first live verificatio
 (images 200'd but silently failed to render until `Cross-Origin-Resource-Policy` was scoped to
 allow `/media/*` cross-origin).
 
+## Multi-agent commerce chat
+
+Implements [`chat_spec.md`](./chat_spec.md), adapted to this project's real stack (MySQL, not
+Postgres; Railway for the MCP servers, not a generic host) per
+[`chat_implementation_plan.md`](./chat_implementation_plan.md), which has the full build log —
+milestone-by-milestone decisions, deviations from the spec, and every bug this feature's own live
+testing caught.
+
+Three specialised chat agents, each scoped to its own tools and its own system prompt, backed by
+DeepSeek (`deepseek-chat`, OpenAI-compatible API) doing real tool-calling:
+
+- **Stylist** (`/api/v1/chat/stylist`, public) — a virtual fashion stylist, not just a weather-aware
+  product filter. Reasons jointly over the destination's visual character and cultural/style norms,
+  real forecasted weather, the user's stated skin tone (mapped to a colour palette), and occasion —
+  the same inputs an actual stylist would weigh — then ranks real catalogue products against that
+  combined read and explains *why* each pick fits. Tools: `catalog-mcp`, `weather-mcp`.
+- **Support** (`/api/v1/chat/support`, requires login) — order status, return eligibility/initiation,
+  refund status, policy lookup, ticket creation. Strictly scoped to the logged-in user's own data:
+  `user_id` is injected server-side into every tool call and stripped from the tool schema the LLM
+  ever sees, so it's structurally impossible for the model to query — or be tricked into
+  querying — another user's orders. An intent-gate (regex + LLM classification) rejects off-scope
+  requests before they reach the model. Tools: `support-mcp`.
+- **Insights** (`/api/v1/chat/insights`, admin-only) — sales trends, low-stock alerts, top products,
+  category performance, returns analysis, period comparisons, natural-language-in /
+  structured-blocks-out. Runs against a dedicated `analytics_ro` MySQL role, empirically verified to
+  have zero access to PII-bearing tables — a defense-in-depth boundary enforced by the database grant
+  itself, not just application code. Tools: `analytics-mcp`.
+
+All three: real token-by-token streaming (Server-Sent Events end to end — DeepSeek → FastAPI
+`StreamingResponse` → `@microsoft/fetch-event-source` on the frontend, not a buffer-then-flush
+fake), and genuine short-term memory — each new message is sent with the full prior conversation
+history for that session (capped, per agent, to keep prompts bounded), so the agents actually
+remember what was said earlier in the chat rather than answering each turn cold.
+
+### Architecture
+
+Four standalone **MCP servers** (`backend/app/mcp/{catalog,weather,support,analytics}.py`, built on
+`mcp.server.fastmcp.FastMCP`) expose the actual tool implementations — real MySQL queries, a real
+Open-Meteo weather API call, real order/return logic — decoupled from which agent calls them. A
+config-driven `AgentConfig` (`backend/app/agents/runtime.py`) fixes, per agent: which MCP servers are
+in scope (a server not listed never appears in that agent's DeepSeek request payload at all — this
+*is* the tool-isolation guarantee, not just a filter), temperature, tool-iteration budget, and any
+server-injected/hidden arguments. The Stylist agent (`backend/app/agents/stylist.py`) isn't a
+tool-loop like the other two — it's a fixed pipeline (extract slots → fetch weather/climate/palette →
+rank real products → stream an intro + generate structured reasons concurrently) since its job is
+synthesis across several real data sources rather than open-ended tool selection.
+
+### Running it locally
+
+Needs a real `DEEPSEEK_API_KEY` (get one at platform.deepseek.com) in `backend/.env` — the chat
+routes raise a clear error without one; nothing else in the app is affected.
+
+**1. Start the four MCP servers** (stdio is the default transport — no ports to manage locally),
+each from `backend/`, in separate terminals:
+```
+../myenv/Scripts/python.exe run_mcp_server.py catalog
+../myenv/Scripts/python.exe run_mcp_server.py weather
+../myenv/Scripts/python.exe run_mcp_server.py support
+../myenv/Scripts/python.exe run_mcp_server.py analytics
+```
+(`analytics` needs `ANALYTICS_MYSQL_PASSWORD` set — see `scripts/provision_analytics_ro.sql` for
+provisioning that read-only role first.)
+
+**2. Start the backend and frontend** as in "Running it" above — the chat widget appears
+bottom-right on the storefront (Stylist), on order/account pages (Support), and at `/admin/insights`
+(Insights, admin-only).
+
+### Deploying the MCP servers (open — see "Known gaps to close next")
+
+The backend calls each MCP server over HTTP via `CATALOG_MCP_URL` / `WEATHER_MCP_URL` /
+`SUPPORT_MCP_URL` / `ANALYTICS_MCP_URL` (defaulting to `http://127.0.0.1:81{01..04}/mcp` for local
+dev). In production these need to point at real `streamable-http` deployments — planned on Railway,
+one service per server (`MCP_TRANSPORT=streamable-http python run_mcp_server.py <name>`, Railway
+sets `$PORT` itself) — plus `DEEPSEEK_API_KEY` set in Vercel. Neither is done yet, which is why the
+live URL's chat widget is visible and correctly routed but not yet functional (see "Live" note at
+the top).
+
 ## What's deferred
 
 The full spec assumes Docker Compose orchestrating MySQL, Redis, Elasticsearch, MinIO, and Celery.
@@ -103,9 +187,10 @@ Docker isn't installed on this machine, so for now:
 
 ## Secrets
 
-`.env` (git-ignored) holds `mysql_password` and `kaggle_api_key` — both real secrets. `data/raw/`
-(the downloaded dataset) is also git-ignored since it's regeneratable and large. Neither should ever
-be committed.
+`.env` (git-ignored) holds `mysql_password`, `kaggle_api_key`, and (for the chat feature)
+`DEEPSEEK_API_KEY` — all real secrets. `data/raw/` (the downloaded dataset) is also git-ignored since
+it's regeneratable and large. None of these should ever be committed — `.env.example` tracks only
+placeholder values, and gitleaks scans every push (see Continuous Integration below).
 
 ## Continuous Integration
 
@@ -167,6 +252,12 @@ port collisions) with symptom → diagnosis → fix for each.
 - A known, narrow, cosmetic timing race on sign-out can land the user on `/auth/login?next=...`
   instead of home (both are valid "you're signed out" states — see done.MD §31 for the full
   writeup; caught by the E2E suite, not fully closed rather than chased further).
+- **Chat feature isn't live yet** — the four MCP servers (`backend/app/mcp/*.py`) only run locally;
+  they need real Railway deployments (`streamable-http` transport, one service each), and
+  `DEEPSEEK_API_KEY` plus the four `*_MCP_URL` vars need to be set in Vercel production. Until then
+  the chat widget is deployed and correctly auth-gated on the live URL but returns an upstream error
+  if actually used. See "Multi-agent commerce chat" above and `chat_implementation_plan.md`'s M8
+  section.
 
 ## Directory layout
 

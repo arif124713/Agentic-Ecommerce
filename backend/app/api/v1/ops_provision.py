@@ -34,6 +34,26 @@ def _require_secret(x_migration_secret: str | None) -> None:
         raise HTTPException(status_code=404)
 
 
+@router.get("/diag-open")
+def diag_open():
+    """Unauthenticated on purpose (temporary) — reports non-reversible fingerprints (sha256 prefix +
+    length) of the two secret settings, never the raw values, so a mismatch between what was set in
+    Vercel and what the running function actually resolves can be diagnosed without exposing either
+    secret. Delete alongside the rest of this file."""
+    import hashlib
+
+    settings = get_settings()
+
+    def fp(v: str | None) -> dict:
+        v = v or ""
+        return {"len": len(v), "sha256_8": hashlib.sha256(v.encode()).hexdigest()[:8]}
+
+    return {
+        "migration_trigger_secret": fp(settings.migration_trigger_secret),
+        "mcp_internal_secret": fp(settings.mcp_internal_secret),
+    }
+
+
 @router.get("/diag")
 def diag(x_migration_secret: str | None = Header(default=None)):
     """Deliberately import-free of `alembic` at module scope — see provision_chat_db's docstring.

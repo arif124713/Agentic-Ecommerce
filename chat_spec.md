@@ -978,7 +978,7 @@ CREATE INDEX idx_chat_msgs_session ON chat_messages (session_id, created_at DESC
 
 ```bash
 # ── LLM ─────────────────────────────────────────────
-DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx     # ← add manually, never commit
+DEEPSEEK_API_KEY=<your-deepseek-api-key>         # ← add manually, never commit
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-chat
 LLM_TIMEOUT_SECONDS=45

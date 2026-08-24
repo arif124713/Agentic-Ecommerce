@@ -19,7 +19,6 @@ from app.api.v1.chat import insights as chat_insights
 from app.api.v1.chat import stylist as chat_stylist
 from app.api.v1.chat import support as chat_support
 from app.api.v1.discovery import router as discovery
-from app.api.v1.ops_provision import router as ops_provision
 from app.api.v1.orders import router as orders
 from app.api.v1.payments import router as payments
 from app.api.v1.storefront import catalog
@@ -55,4 +54,3 @@ api_router.include_router(admin_api_keys.router)
 api_router.include_router(chat_insights.router)
 api_router.include_router(chat_support.router)
 api_router.include_router(chat_stylist.router)
-api_router.include_router(ops_provision)

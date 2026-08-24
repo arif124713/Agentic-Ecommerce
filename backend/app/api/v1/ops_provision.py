@@ -15,11 +15,9 @@ the analytics_ro grant script (CREATE USER IF NOT EXISTS + REVOKE + re-GRANT, sa
 from __future__ import annotations
 
 import hmac
+import sys
 from pathlib import Path
 
-from alembic import command
-from alembic.config import Config
-from alembic.runtime.migration import MigrationContext
 from fastapi import APIRouter, Header, HTTPException
 from sqlalchemy import create_engine, text
 
@@ -36,10 +34,36 @@ def _require_secret(x_migration_secret: str | None) -> None:
         raise HTTPException(status_code=404)
 
 
+@router.get("/diag")
+def diag(x_migration_secret: str | None = Header(default=None)):
+    """Deliberately import-free of `alembic` at module scope — see provision_chat_db's docstring.
+    Reports whether the real pip-installed alembic package (not this repo's own alembic/ migrations
+    directory, which collides on name) is actually reachable, without risking another app-wide
+    import crash if it isn't."""
+    _require_secret(x_migration_secret)
+    import importlib.util
+
+    spec = importlib.util.find_spec("alembic.command")
+    return {
+        "alembic_command_spec": None if spec is None else str(spec.origin),
+        "sys_path_head": sys.path[:8],
+        "cwd": str(Path.cwd()),
+    }
+
+
 @router.post("/provision-chat-db")
 def provision_chat_db(x_migration_secret: str | None = Header(default=None)):
     _require_secret(x_migration_secret)
     settings = get_settings()
+
+    # Imported here, not at module scope: `backend/alembic/` (this repo's OWN migrations directory,
+    # required to be named exactly that by alembic.ini) collides with the real pip-installed
+    # `alembic` package's name in Vercel's deployed function — a module-level import here took down
+    # the ENTIRE app on first deploy (every route, not just this one) since main.py -> router.py ->
+    # this file all import eagerly. Deferring it here means a failure only 500s this one endpoint.
+    from alembic import command
+    from alembic.config import Config
+    from alembic.runtime.migration import MigrationContext
 
     cfg = Config(str(_BACKEND_ROOT / "alembic.ini"))
     cfg.set_main_option("script_location", str(_BACKEND_ROOT / "alembic"))

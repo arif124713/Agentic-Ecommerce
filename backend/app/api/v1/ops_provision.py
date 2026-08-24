@@ -296,8 +296,13 @@ def provision_chat_db(x_migration_secret: str | None = Header(default=None)):
             password = settings.analytics_mysql_password
             db = settings.mysql_db
             with engine.begin() as conn:
+                # No REVOKE ALL here (unlike scripts/provision_analytics_ro.sql, meant for repeated
+                # local re-runs): this managed MySQL's admin account (Aiven's restricted `avnadmin`,
+                # not a true root) can CREATE USER/GRANT but can't REVOKE ALL PRIVILEGES — that needs
+                # `sys` schema access this account doesn't have. A REVOKE is only needed to clean up
+                # stale grants from a PRIOR run anyway; CREATE USER IF NOT EXISTS on a genuinely new
+                # user starts with zero privileges, so there's nothing to revoke on this one-time run.
                 conn.execute(text(f"CREATE USER IF NOT EXISTS '{user}'@'%%' IDENTIFIED BY :pw"), {"pw": password})
-                conn.execute(text(f"REVOKE ALL PRIVILEGES, GRANT OPTION FROM '{user}'@'%%'"))
                 conn.execute(text(f"GRANT SELECT ON {db}.daily_sales_summary TO '{user}'@'%%'"))
                 conn.execute(text(f"GRANT SELECT ON {db}.product_velocity_summary TO '{user}'@'%%'"))
                 conn.execute(text(f"GRANT SELECT ON {db}.category_performance_summary TO '{user}'@'%%'"))

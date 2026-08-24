@@ -40,7 +40,9 @@ def _server_urls() -> dict[str, str]:
 @asynccontextmanager
 async def _session(server: str):
     url = _server_urls()[server]
-    async with streamablehttp_client(url) as (read, write, _get_session_id):
+    settings = get_settings()
+    headers = {"X-MCP-Internal-Secret": settings.mcp_internal_secret} if settings.mcp_internal_secret else None
+    async with streamablehttp_client(url, headers=headers) as (read, write, _get_session_id):
         async with ClientSession(read, write) as session:
             await session.initialize()
             yield session

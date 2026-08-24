@@ -161,6 +161,15 @@ class Settings(BaseSettings):
     # unset in every environment except production during the one-time chat-feature provisioning
     # step; the endpoint 404s without it. Remove both once that one-time run is done.
     migration_trigger_secret: str | None = Field(default=None, alias="MIGRATION_TRIGGER_SECRET")
+    # The 4 chat MCP servers are mounted under /api/mcp/* (app/main.py), a PUBLIC path on the same
+    # domain as everything else — unlike the originally-planned Railway topology, there's no network
+    # boundary keeping a random caller from hitting e.g. support-mcp's get_order_status directly with
+    # an arbitrary user_id, bypassing our own bridge's server-side user_id injection entirely. This
+    # shared secret closes that: app/main.py's _McpAuthMiddleware requires it as a header on every
+    # /api/mcp/* request (skipped entirely if unset, e.g. local dev, where those routes aren't the
+    # only way in anyway — the standalone run_mcp_server.py processes bind 127.0.0.1 only), and
+    # app/agents/mcp_pool.py sends it on every call.
+    mcp_internal_secret: str = Field(default="", alias="MCP_INTERNAL_SECRET")
     min_products_per_recommendation: int = Field(default=5, alias="MIN_PRODUCTS_PER_RECOMMENDATION")
 
     @property

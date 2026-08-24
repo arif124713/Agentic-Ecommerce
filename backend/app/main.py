@@ -1,9 +1,12 @@
+import hmac
 from contextlib import AsyncExitStack, asynccontextmanager
+from urllib.parse import urlparse
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from prometheus_fastapi_instrumentator import Instrumentator
+from starlette.responses import Response
 
 from app.api.seo import router as seo_router
 from app.api.v1.operational import router as operational_router
@@ -34,6 +37,38 @@ logger = get_logger("blackcart.main")
 # production), matching local dev's `run_mcp_server.py` standalone-process URLs exactly — the bridge
 # code (app/agents/mcp_pool.py) doesn't know or care which case it's in.
 _MCP_APPS = {"catalog": catalog_mcp, "weather": weather_mcp, "support": support_mcp, "analytics": analytics_mcp}
+
+# FastMCP's streamable-http transport defaults to DNS-rebinding protection that only allows
+# 127.0.0.1/localhost Host headers — correct for the originally-planned standalone-process case, but
+# it silently 421s every real request once mounted on a real domain. Extend (not replace) that
+# allowlist with whatever host CATALOG_MCP_URL etc. actually point at, so local dev's existing
+# defaults keep working unchanged.
+_prod_host = urlparse(settings.catalog_mcp_url).netloc
+for _m in _MCP_APPS.values():
+    ts = _m.settings.transport_security
+    if ts is not None and _prod_host and _prod_host not in ts.allowed_hosts:
+        ts.allowed_hosts = [*ts.allowed_hosts, _prod_host]
+        ts.allowed_origins = [*ts.allowed_origins, f"https://{_prod_host}", f"http://{_prod_host}"]
+
+
+class _McpSecretGate:
+    """Wraps a mounted MCP sub-app, requiring X-MCP-Internal-Secret to match
+    settings.mcp_internal_secret when that setting is non-empty — see its docstring in
+    core/config.py for why this exists. A no-op (secret unset) in local dev."""
+
+    def __init__(self, app, secret: str):
+        self._app = app
+        self._secret = secret
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not self._secret:
+            await self._app(scope, receive, send)
+            return
+        provided = dict(scope["headers"]).get(b"x-mcp-internal-secret", b"").decode("latin-1")
+        if not hmac.compare_digest(provided, self._secret):
+            await Response(status_code=404)(scope, receive, send)
+            return
+        await self._app(scope, receive, send)
 
 
 @asynccontextmanager
@@ -94,7 +129,7 @@ app.include_router(api_router, prefix=settings.api_prefix)
 # endpoint at "/mcp" relative to its mount point (FastMCP's default streamable_http_path), so the
 # full path is e.g. /api/mcp/catalog/mcp — matching what CATALOG_MCP_URL etc. must be set to.
 for _name, _mcp in _MCP_APPS.items():
-    app.mount(f"/api/mcp/{_name}", _mcp.streamable_http_app())
+    app.mount(f"/api/mcp/{_name}", _McpSecretGate(_mcp.streamable_http_app(), settings.mcp_internal_secret))
 
 # spec §21.2's Prometheus metrics — request rate/latency/status per route out of the box
 # (http_requests_total, http_request_duration_seconds). The rest of §21.2's business/domain

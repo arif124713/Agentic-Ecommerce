@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 StylistEventCallback = Callable[[dict], Awaitable[None]]
 
-_RELAXATION_LADDER = ["drop_exclude_colors", "widen_price_max", "drop_fabrics", "drop_categories", "allow_out_of_stock"]
+_RELAXATION_LADDER = ["drop_search_keywords", "drop_exclude_colors", "widen_price_max", "drop_fabrics", "drop_categories", "allow_out_of_stock"]
 
 
 async def _call(server: str, tool: str, arguments: dict) -> dict | None:
@@ -53,7 +53,7 @@ async def _search_once(slots: dict, climate: dict | None, palette: dict | None, 
     if budget_max is not None and "widen_price_max" in rungs_applied:
         budget_max = budget_max * 1.25
 
-    params = {
+    params: dict[str, object] = {
         # catalog-mcp's max — the diversity pass (stylist_ranker.select_with_diversity) can only
         # diversify across whatever this one call returns, so a bigger candidate pool matters
         # more than it would for a plain top-N search.
@@ -61,6 +61,9 @@ async def _search_once(slots: dict, climate: dict | None, palette: dict | None, 
         "in_stock_only": "allow_out_of_stock" not in rungs_applied,
         "skin_tone_context": slots.get("skin_depth") is not None,
     }
+    search_keywords = slots.get("search_keywords")
+    if search_keywords and "drop_search_keywords" not in rungs_applied:
+        params["q"] = " ".join(search_keywords)
     if categories:
         params["categories"] = categories
     if colors:

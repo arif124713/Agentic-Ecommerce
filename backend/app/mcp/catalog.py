@@ -1,12 +1,14 @@
 """catalog-mcp (chat_spec.md §4.1). Read-only over the product catalog. Wraps the SAME MySQL
 models/queries the storefront itself uses — no parallel data path.
 
-`search_products` deliberately does NOT go through `app.core.search_backend`'s Algolia client: the
-Stylist Agent's calls carry no free-text `q` (they're pure facet browsing on destination/climate/
-palette-derived filters), and that's exactly the case `ProductRepository.list_products` already
-routes to MySQL rather than Algolia (see that module's own docstring) — Algolia's index isn't even
-configured with fabric/occasion/climate facets. Going straight to MySQL here matches the app's own
-existing routing decision, not a new one.
+`search_products` deliberately does NOT go through `app.core.search_backend`'s Algolia client, even
+though the Stylist now does send free-text `q` (see that param's own docstring — added after a real
+report that results weren't varying with the specific problem described, only destination/skin-tone/
+gender/budget): Algolia's index isn't configured with fabric/occasion/climate facets, and `q` here
+reuses the exact same broadened OR-of-tokens title/search_keywords match
+(`app.repositories.catalog._token_condition`) the plain-MySQL storefront search path already uses,
+combined with the destination/palette-derived structured filters rather than replacing them. Going
+straight to MySQL here matches the app's own existing routing decision, not a new one.
 
 **Documented gap**: `occasion` and `climate` are accepted (matching the spec's inputSchema so a
 future migration can wire them up) but currently NOOP — `Product` has no `occasion_tags`/
@@ -21,14 +23,14 @@ from __future__ import annotations
 from decimal import Decimal
 
 from mcp.server.fastmcp import FastMCP
-from sqlalchemy import ColumnElement, func, select
+from sqlalchemy import ColumnElement, case, func, select
 from sqlalchemy.orm import selectinload
 
 from app.core.config import get_settings
 from app.mcp.common import primary_session, to_jsonable
 from app.models.catalog import Category, Product, ProductVariant
 from app.models.styling import ClimateProfile, ColorPalette, DestinationAlias
-from app.repositories.catalog import ProductRepository
+from app.repositories.catalog import ProductRepository, _token_condition, _tokens
 
 mcp = FastMCP(name="catalog-mcp", instructions="Read-only product catalog search and detail lookup.")
 
@@ -76,6 +78,7 @@ def _product_card(product: Product) -> dict:
 @mcp.tool()
 async def search_products(
     limit: int,
+    q: str | None = None,
     categories: list[str] | None = None,
     colors: list[str] | None = None,
     exclude_colors: list[str] | None = None,
@@ -91,6 +94,13 @@ async def search_products(
     """Faceted product search. Returns ranked products with images and prices. Always request
     limit>=8 so the caller's own ranker has headroom to return at least 5 after filtering.
 
+    `q`: free-text terms describing the actual need behind the request (e.g. "wedding guest",
+    "trekking jacket", "office interview") — matched (broadened OR-of-tokens, any word) against
+    title/search_keywords, the same matching this catalog's own storefront search uses (see
+    `app.repositories.catalog._token_condition`). This is what makes results vary with the specific
+    problem being solved rather than just destination/skin-tone/gender/budget; omit it for a pure
+    facet browse.
+
     skin_tone_context=true (set whenever the caller derived `colors` from a skin-tone palette,
     i.e. get_color_palette was used this turn): excludes skin-lightening/whitening/fairness/
     brightening-cream products by construction (spec §9.4 — a hard category blocklist, never left
@@ -104,6 +114,9 @@ async def search_products(
             .where(Product.status == "active", Product.deleted_at.is_(None))
             .options(selectinload(Product.brand), selectinload(Product.category), selectinload(Product.variants))
         )
+
+        if q and q.strip():
+            stmt = stmt.where(_token_condition(_tokens(q.strip()), require_all=False))
 
         if categories:
             repo = ProductRepository(session)
@@ -134,7 +147,14 @@ async def search_products(
             for term in _SKIN_LIGHTENING_BLOCKLIST:
                 stmt = stmt.where(~Product.title.ilike(f"%{term}%"))
 
-        stmt = stmt.order_by(Product.sold_count.desc()).limit(limit)
+        if q and q.strip():
+            # Title-prefix matches first (closest to what the user actually asked for), then fall
+            # back to popularity within each relevance tier — otherwise a broadened OR-of-tokens
+            # match would still just re-sort back to "same best-sellers" order.
+            relevance = case((Product.title.ilike(f"{q.strip()}%"), 1), else_=0)
+            stmt = stmt.order_by(relevance.desc(), Product.sold_count.desc()).limit(limit)
+        else:
+            stmt = stmt.order_by(Product.sold_count.desc()).limit(limit)
         products = list((await session.execute(stmt)).scalars().all())
 
         return to_jsonable({"count": len(products), "products": [_product_card(p) for p in products]})

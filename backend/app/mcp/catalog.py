@@ -115,8 +115,9 @@ async def search_products(
             .options(selectinload(Product.brand), selectinload(Product.category), selectinload(Product.variants))
         )
 
-        if q and q.strip():
-            stmt = stmt.where(_token_condition(_tokens(q.strip()), require_all=False))
+        q_tokens = _tokens(q.strip()) if q and q.strip() else []
+        if q_tokens:
+            stmt = stmt.where(_token_condition(q_tokens, require_all=False))
 
         if categories:
             repo = ProductRepository(session)
@@ -147,11 +148,15 @@ async def search_products(
             for term in _SKIN_LIGHTENING_BLOCKLIST:
                 stmt = stmt.where(~Product.title.ilike(f"%{term}%"))
 
-        if q and q.strip():
-            # Title-prefix matches first (closest to what the user actually asked for), then fall
-            # back to popularity within each relevance tier — otherwise a broadened OR-of-tokens
-            # match would still just re-sort back to "same best-sellers" order.
-            relevance = case((Product.title.ilike(f"{q.strip()}%"), 1), else_=0)
+        if q_tokens:
+            # Rank by how many of the individual keyword tokens actually appear in the title, not
+            # just whether the OR-of-tokens WHERE clause matched at all — a single common token
+            # (e.g. "shirt") would otherwise match most of the catalog and swamp a more specific
+            # co-occurring one (e.g. "interview"), leaving the result no more targeted than a plain
+            # popularity sort. Ties broken by popularity within each relevance tier.
+            relevance: ColumnElement = case((Product.title.ilike(f"%{q_tokens[0]}%"), 1), else_=0)
+            for t in q_tokens[1:]:
+                relevance = relevance + case((Product.title.ilike(f"%{t}%"), 1), else_=0)
             stmt = stmt.order_by(relevance.desc(), Product.sold_count.desc()).limit(limit)
         else:
             stmt = stmt.order_by(Product.sold_count.desc()).limit(limit)
